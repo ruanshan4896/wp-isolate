@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eu
+set -o pipefail 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FAILED=0

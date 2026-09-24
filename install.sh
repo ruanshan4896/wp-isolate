@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # install.sh - Installer for wp-isolate on aaPanel (Ubuntu/Debian)
-set -euo pipefail
+set -eu
+set -o pipefail 2>/dev/null || true
 
 INSTALL_DIR="/opt/wp-isolate"
 BIN_LINK="/usr/local/bin/wp-isolate"
