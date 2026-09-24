@@ -446,6 +446,11 @@ if (file_exists($root . '/wp-load.php')) {
             $conf['cache-object-key_prefix'] = $prefix;
             update_option('litespeed-conf', $conf);
         }
+
+        // 3. Trigger initial cache write to ensure Redis database is instantly provisioned
+        if (function_exists('wp_cache_set')) {
+            wp_cache_set('wp_isolate_init', time(), '', 300);
+        }
     }
 }
 EOF
@@ -453,6 +458,11 @@ EOF
             rm -f "$sync_script"
             synced=true
         fi
+    fi
+
+    # Terminate active worker processes for this user to release persistent Redis sockets
+    if [ "${EUID:-$(id -u)}" -eq 0 ] && [ -n "$site_user" ]; then
+        pkill -u "$site_user" -f lsphp 2>/dev/null || true
     fi
 
     if [ "$synced" = true ]; then
