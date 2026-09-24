@@ -42,27 +42,67 @@ detect_vhost_docroot() {
 
 detect_php_version() {
     local domain="$1"
-    local vhost_file
-    vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
-    
-    if [ -n "$vhost_file" ] && [ -f "$vhost_file" ]; then
-        # Check for lsphp reference (e.g. lsphp81, lsphp82, lsphp74)
-        local ver
-        ver=$(grep -oE "lsphp[0-9]{2}" "$vhost_file" | head -n 1 | sed 's/lsphp//')
-        if [ -n "$ver" ]; then
-            echo "$ver"
-            return 0
+    local candidates=(
+        "/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+        "/www/server/panel/vhost/openlitespeed/${domain}.conf"
+        "/usr/local/lsws/conf/vhosts/${domain}/vhconf.conf"
+    )
+    for f in "${candidates[@]}"; do
+        if [ -f "$f" ]; then
+            local ver
+            ver=$(grep -oE "lsphp[0-9]{2}" "$f" | head -n 1 | sed 's/lsphp//' || true)
+            if [ -n "$ver" ]; then
+                echo "$ver"
+                return 0
+            fi
         fi
-    fi
+    done
 
     # Fallback to checking installed lsphp binaries in /usr/local/lsws/
-    for v in 83 82 81 80 74; do
+    for v in 84 83 82 81 80 74 73 72 71 70; do
         if [ -x "/usr/local/lsws/lsphp${v}/bin/lsphp" ]; then
             echo "$v"
             return 0
         fi
     done
     echo "81" # Default fallback
+}
+
+detect_lsphp_executable() {
+    local requested_ver="$1"
+
+    # 1. Check exact requested version
+    if [ -x "/usr/local/lsws/lsphp${requested_ver}/bin/lsphp" ]; then
+        echo "/usr/local/lsws/lsphp${requested_ver}/bin/lsphp"
+        return 0
+    fi
+
+    # 2. Check any other installed version in /usr/local/lsws/
+    for v in 84 83 82 81 80 74 73 72 71 70; do
+        if [ -x "/usr/local/lsws/lsphp${v}/bin/lsphp" ]; then
+            echo "/usr/local/lsws/lsphp${v}/bin/lsphp"
+            return 0
+        fi
+    done
+
+    # 3. Check fcgi-bin
+    for f in /usr/local/lsws/fcgi-bin/lsphp*; do
+        if [ -x "$f" ]; then
+            echo "$f"
+            return 0
+        fi
+    done
+
+    # 4. Check aaPanel PHP paths
+    for p in /www/server/php/*/bin/php; do
+        if [ -x "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+
+    # Fallback default
+    echo "/usr/local/lsws/lsphp${requested_ver}/bin/lsphp"
 }
 
 render_ols_isolate_template() {
@@ -100,7 +140,8 @@ render_ols_isolate_template() {
     local proc_soft="$((max_conns + 5))"
     local proc_hard="$((max_conns * 2))"
 
-    local lsphp_path="/usr/local/lsws/lsphp${php_ver}/bin/lsphp"
+    local lsphp_path
+    lsphp_path=$(detect_lsphp_executable "$php_ver")
 
     mkdir -p "$(dirname "$output_file")"
 
@@ -170,7 +211,8 @@ verify_and_reload_ols() {
     done
 
     if [ -n "$test_bin" ]; then
-        if ! "$test_bin" -t >/tmp/ols_test.log 2>&1; then
+        "$test_bin" -t >/tmp/ols_test.log 2>&1 || true
+        if grep -qE "\[ERROR\]|\[FATAL\]" /tmp/ols_test.log; then
             log_error "OpenLiteSpeed syntax check failed! Check details in /tmp/ols_test.log"
             cat /tmp/ols_test.log >&2
             return 1

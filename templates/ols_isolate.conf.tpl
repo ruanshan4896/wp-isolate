@@ -30,9 +30,9 @@ scripthandler {
 }
 
 phpIniOverride {
-  php_admin_value[open_basedir] = "{{DOCROOT}}/:/tmp/:/dev/urandom"
-  php_admin_value[session.save_path] = "/tmp"
-  php_admin_value[upload_tmp_dir] = "/tmp"
+  php_value open_basedir "{{DOCROOT}}/:/tmp/:/dev/urandom"
+  php_value session.save_path "/tmp"
+  php_value upload_tmp_dir "/tmp"
 }
 
 # L7 Anti-DDoS and Request Throttling
