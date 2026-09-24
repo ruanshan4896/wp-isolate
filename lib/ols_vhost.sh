@@ -161,21 +161,30 @@ remove_ols_include() {
 
 verify_and_reload_ols() {
     log_info "Verifying OpenLiteSpeed configuration syntax..."
-    local test_bin="/usr/local/lsws/bin/lswsctrl"
-    
-    if [ -x "$test_bin" ]; then
-        if ! "$test_bin" test >/tmp/ols_test.log 2>&1; then
+    local test_bin=""
+    for b in "/usr/local/lsws/bin/openlitespeed" "/usr/local/lsws/bin/lshttpd"; do
+        if [ -x "$b" ]; then
+            test_bin="$b"
+            break
+        fi
+    done
+
+    if [ -n "$test_bin" ]; then
+        if ! "$test_bin" -t >/tmp/ols_test.log 2>&1; then
             log_error "OpenLiteSpeed syntax check failed! Check details in /tmp/ols_test.log"
             cat /tmp/ols_test.log >&2
             return 1
         fi
         log_success "OpenLiteSpeed configuration syntax is OK."
-        log_info "Reloading OpenLiteSpeed gracefully..."
-        touch /tmp/lshttpd/.rtreport 2>/dev/null || true
-        systemctl reload lsws 2>/dev/null || "$test_bin" restart >/dev/null 2>&1 || true
-        log_success "OpenLiteSpeed reloaded."
-    else
-        log_warn "OpenLiteSpeed binary not found at $test_bin (dry-run or non-standard install)."
     fi
+
+    log_info "Reloading OpenLiteSpeed gracefully..."
+    touch /tmp/lshttpd/.rtreport 2>/dev/null || true
+    if [ -x "/usr/local/lsws/bin/lswsctrl" ]; then
+        /usr/local/lsws/bin/lswsctrl reload >/dev/null 2>&1 || /usr/local/lsws/bin/lswsctrl restart >/dev/null 2>&1 || true
+    elif command -v systemctl >/dev/null 2>&1; then
+        systemctl reload lsws 2>/dev/null || systemctl restart lsws 2>/dev/null || true
+    fi
+    log_success "OpenLiteSpeed reloaded."
     return 0
 }

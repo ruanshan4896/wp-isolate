@@ -48,11 +48,21 @@ apply_site_permissions() {
 
     log_info "Applying isolation permissions on $docroot for user $user..."
 
+    # Handle aaPanel immutable .user.ini if present
+    if [ -f "$docroot/.user.ini" ]; then
+        chattr -i "$docroot/.user.ini" 2>/dev/null || true
+    fi
+
     # Change owner to isolated user (if root)
     if [ "${EUID:-$(id -u)}" -eq 0 ]; then
-        chown -R "${user}:${user}" "$docroot"
+        chown -R "${user}:${user}" "$docroot" 2>/dev/null || true
     fi
     chmod 750 "$docroot"
+
+    # Restore immutable attribute to .user.ini
+    if [ -f "$docroot/.user.ini" ]; then
+        chattr +i "$docroot/.user.ini" 2>/dev/null || true
+    fi
 
     # Allow aaPanel OLS web worker (www) read access to static assets via POSIX ACL
     if command -v setfacl >/dev/null 2>&1; then
@@ -89,11 +99,19 @@ restore_site_permissions() {
         setfacl -R -b "$docroot" 2>/dev/null || true
     fi
 
+    if [ -f "$docroot/.user.ini" ]; then
+        chattr -i "$docroot/.user.ini" 2>/dev/null || true
+    fi
+
     if [ "${EUID:-$(id -u)}" -eq 0 ]; then
-        chown -R www:www "$docroot"
+        chown -R www:www "$docroot" 2>/dev/null || true
     fi
     chmod 755 "$docroot"
     find "$docroot" -type f -exec chmod 644 {} + 2>/dev/null || true
     find "$docroot" -type d -exec chmod 755 {} + 2>/dev/null || true
+
+    if [ -f "$docroot/.user.ini" ]; then
+        chattr +i "$docroot/.user.ini" 2>/dev/null || true
+    fi
     log_success "Restored permissions to www:www."
 }
