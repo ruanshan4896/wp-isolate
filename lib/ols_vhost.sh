@@ -198,7 +198,7 @@ remove_ols_include() {
     fi
 
     # Remove block between markers
-    sed -i "/### BEGIN WP-ISOLATE: ${domain} ###/,/### END WP-ISOLATE: ${domain} ###/d" "$vhost_file"
+    sed_i "/### BEGIN WP-ISOLATE: ${domain} ###/,/### END WP-ISOLATE: ${domain} ###/d" "$vhost_file"
     log_info "Removed WP-ISOLATE include block from $vhost_file."
 }
 
@@ -223,22 +223,23 @@ isolate_ols_vhost() {
     # 1. Update outer file to enable suEXEC (setUIDMode 2)
     if [ -f "$outer_file" ]; then
         if grep -q "setUIDMode" "$outer_file"; then
-            sed -i -E "s/setUIDMode\s+[0-9]+/setUIDMode 2/" "$outer_file"
+            sed_i -E "s/setUIDMode[[:space:]]+[0-9]+/setUIDMode 2/" "$outer_file"
         else
-            sed -i "/virtualhost\s\+${domain}\s\+{/a\setUIDMode 2" "$outer_file" 2>/dev/null || true
+            sed_i "/virtualhost[[:space:]]\+${domain}[[:space:]]\+{/a\\
+setUIDMode 2" "$outer_file" 2>/dev/null || true
         fi
         log_info "Configured suEXEC (setUIDMode 2) in $outer_file"
     fi
 
     # 2. Update detail file (where aaPanel defines extprocessor)
     if [ -f "$detail_file" ]; then
-        sed -i -E "s/^\s*extUser\s+.*/  extUser                 ${user}/" "$detail_file"
-        sed -i -E "s/^\s*extGroup\s+.*/  extGroup                ${user}/" "$detail_file"
-        sed -i -E "s/^\s*maxConns\s+[0-9]+/  maxConns                ${max_conns}/" "$detail_file"
-        sed -i -E "s/^\s*memSoftLimit\s+[0-9]+M?/  memSoftLimit            ${mem_soft}/" "$detail_file"
-        sed -i -E "s/^\s*memHardLimit\s+[0-9]+M?/  memHardLimit            ${mem_hard}/" "$detail_file"
-        sed -i -E "s/^\s*procSoftLimit\s+[0-9]+/  procSoftLimit           ${proc_soft}/" "$detail_file"
-        sed -i -E "s/^\s*procHardLimit\s+[0-9]+/  procHardLimit           ${proc_hard}/" "$detail_file"
+        sed_i -E "s/^[[:space:]]*extUser[[:space:]]+.*/  extUser                 ${user}/" "$detail_file"
+        sed_i -E "s/^[[:space:]]*extGroup[[:space:]]+.*/  extGroup                ${user}/" "$detail_file"
+        sed_i -E "s/^[[:space:]]*maxConns[[:space:]]+[0-9]+/  maxConns                ${max_conns}/" "$detail_file"
+        sed_i -E "s/^[[:space:]]*memSoftLimit[[:space:]]+[0-9]+M?/  memSoftLimit            ${mem_soft}/" "$detail_file"
+        sed_i -E "s/^[[:space:]]*memHardLimit[[:space:]]+[0-9]+M?/  memHardLimit            ${mem_hard}/" "$detail_file"
+        sed_i -E "s/^[[:space:]]*procSoftLimit[[:space:]]+[0-9]+/  procSoftLimit           ${proc_soft}/" "$detail_file"
+        sed_i -E "s/^[[:space:]]*procHardLimit[[:space:]]+[0-9]+/  procHardLimit           ${proc_hard}/" "$detail_file"
 
         # Append Throttling Block
         remove_ols_include "$domain" "$detail_file"
@@ -267,13 +268,13 @@ restore_ols_vhost() {
     local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
 
     if [ -f "$outer_file" ]; then
-        sed -i -E "s/setUIDMode\s+[0-9]+/setUIDMode 0/" "$outer_file"
+        sed_i -E "s/setUIDMode[[:space:]]+[0-9]+/setUIDMode 0/" "$outer_file"
         remove_ols_include "$domain" "$outer_file"
     fi
 
     if [ -f "$detail_file" ]; then
-        sed -i -E "s/^\s*extUser\s+.*/  extUser                 www/" "$detail_file"
-        sed -i -E "s/^\s*extGroup\s+.*/  extGroup                www/" "$detail_file"
+        sed_i -E "s/^[[:space:]]*extUser[[:space:]]+.*/  extUser                 www/" "$detail_file"
+        sed_i -E "s/^[[:space:]]*extGroup[[:space:]]+.*/  extGroup                www/" "$detail_file"
         remove_ols_include "$domain" "$detail_file"
     fi
 }

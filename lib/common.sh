@@ -25,6 +25,14 @@ sanitize_domain_to_user() {
     fi
     echo "$user"
 }
+# Cross-platform in-place sed helper (works on both Linux and macOS/BSD)
+sed_i() {
+    if [ "$(uname)" = "Darwin" ]; then
+        sed -i '' "$@"
+    else
+        sed -i "$@"
+    fi
+}
 
 # Check system prerequisites for running wp-isolate
 check_prerequisites() {

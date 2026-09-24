@@ -60,6 +60,38 @@ EOF
     echo "test_get_next_db_id PASS"
 }
 
+test_get_existing_wp_redis_db() {
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    cat << 'EOF' > "${tmp_dir}/wp-config.php"
+<?php
+/* BEGIN WP-ISOLATE REDIS */
+define( 'WP_REDIS_DATABASE', 7 );
+define( 'WP_CACHE_KEY_SALT', 'site7_com_' );
+/* END WP-ISOLATE REDIS */
+EOF
+
+    local found_id
+    found_id=$(get_existing_wp_redis_db "site7.com" "$tmp_dir")
+    [[ "$found_id" -eq 7 ]] || { echo "Expected existing ID 7, got: $found_id"; exit 1; }
+
+    # Test detection via registry fallback
+    local tmp_reg
+    tmp_reg=$(mktemp)
+    cat << 'EOF' > "$tmp_reg"
+{
+  "site8.com": { "redis_db": 8 }
+}
+EOF
+    local reg_id
+    reg_id=$(get_existing_wp_redis_db "site8.com" "/nonexistent" "$tmp_reg")
+    [[ "$reg_id" -eq 8 ]] || { echo "Expected registry ID 8, got: $reg_id"; exit 1; }
+
+    rm -rf "$tmp_dir" "$tmp_reg"
+    echo "test_get_existing_wp_redis_db PASS"
+}
+
 test_apply_and_remove_wp_redis
 test_get_next_db_id
+test_get_existing_wp_redis_db
 echo "ALL TESTS IN test_redis_isolate.sh PASS"

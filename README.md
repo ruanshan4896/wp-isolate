@@ -59,9 +59,11 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 │                                                                                        │
 │  [ Lớp 5: Database ID & Cache Key Salt Isolation ]                                     │
 │   ├── Auto-Scaling: Tự động nâng số databases từ 16 lên 64 trong redis.conf            │
-│   ├── Auto-Allocation: Cấp phát Database ID riêng biệt (1..63) cho từng website       │
+│   ├── Auto-Allocation & Re-use: Cấp phát Database ID (1..63) và bảo lưu nguyên vẹn ID  │
+│   │   khi chạy lại / cô lập hàng loạt (tránh mất cache đang hoạt động)                 │
 │   ├── wp-config.php: Tự động tiêm WP_REDIS_DATABASE & WP_CACHE_KEY_SALT                │
-│   └── Chống đè cache (Cache Collision), an toàn tuyệt đối khi dùng Object Cache        │
+│   ├── Chống đè cache tuyệt đối (Zero Cache Collision) nhờ tiền tố Salt theo từng domain │
+│   └── Auto Cleanup: Tự động dọn sạch cache cũ (FLUSHDB) nếu đổi Database ID            │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -111,10 +113,13 @@ wp-isolate isolate mywebsite.com \
 - `--no-redis`: Bỏ qua cấu hình Redis Cache cho website.
 
 ### 3. Cô lập hàng loạt tất cả các site
-Tự động quét và cô lập mọi website đang chạy chung user mặc định `www`:
+Tự động quét và cô lập mọi website đang chạy chung user mặc định `www` hoặc chưa có cấu hình Redis Cache:
 ```bash
 wp-isolate isolate-all
 ```
+- **Tự động bảo lưu (Reuse) Redis DB ID**: Các website đã được cô lập trước đó sẽ được giữ nguyên hoàn toàn (bao gồm Database ID trong `wp-config.php`), chỉ cấp ID mới cho các site vừa thêm vào.
+- **Không bao giờ lộn cache**: Nhờ `WP_CACHE_KEY_SALT` tiền tố duy nhất theo domain, mọi site đều được bảo vệ độc lập, không lo cache cũ bị đè hay đọc nhầm.
+- **Tùy chọn `--force`**: Thêm cờ `--force` (`wp-isolate isolate-all --force`) nếu bạn muốn áp đặt lại toàn bộ cấu hình suEXEC/OLS cho tất cả các site mà vẫn bảo lưu nguyên vẹn Database ID Redis hiện tại của từng site.
 
 ### 4. Khôi phục về mặc định (Rollback / Restore)
 Nếu muốn hoàn tác trạng thái cô lập và trả website về quyền `www:www` mặc định của aaPanel:

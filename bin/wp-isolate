@@ -275,7 +275,11 @@ cmd_isolate() {
         if [ -n "$custom_redis_db" ]; then
             redis_db="$custom_redis_db"
         else
-            redis_db=$(get_next_available_redis_db "$SITES_REGISTRY")
+            # Reuse existing assigned database ID if already configured, otherwise allocate next available
+            redis_db=$(get_existing_wp_redis_db "$domain" "$docroot" "$SITES_REGISTRY" 2>/dev/null || true)
+            if [ -z "$redis_db" ]; then
+                redis_db=$(get_next_available_redis_db "$SITES_REGISTRY" "$domain")
+            fi
         fi
         apply_wp_redis_config "$domain" "$docroot" "$redis_db"
     fi

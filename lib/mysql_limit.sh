@@ -7,8 +7,8 @@ extract_wp_db_user() {
     if [ ! -f "$wp_config" ]; then
         return 1
     fi
-    grep -E "define\s*\(\s*['\"]DB_USER['\"]\s*,\s*['\"][^'\"]+['\"]\s*\)" "$wp_config" 2>/dev/null \
-        | sed -E "s/.*['\"]DB_USER['\"]\s*,\s*['\"]([^'\"]+)['\"].*/\1/" \
+    grep -E "define[[:space:]]*\([[:space:]]*['\"]DB_USER['\"][[:space:]]*,[[:space:]]*['\"][^'\"]+['\"][[:space:]]*\)" "$wp_config" 2>/dev/null \
+        | sed -E "s/.*['\"]DB_USER['\"][[:space:]]*,[[:space:]]*['\"]([^'\"]+)['\"].*/\1/" \
         | head -n 1
 }
 

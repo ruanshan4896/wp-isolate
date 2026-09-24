@@ -48,11 +48,11 @@ ensure_redis_databases() {
 
     if [ -n "$conf" ] && [ -f "$conf" ]; then
         local current
-        current=$(grep -E "^\s*databases\s+[0-9]+" "$conf" | awk '{print $2}' | head -n 1 || echo "16")
+        current=$(grep -E "^[[:space:]]*databases[[:space:]]+[0-9]+" "$conf" | awk '{print $2}' | head -n 1 || echo "16")
         if [ -z "$current" ] || [ "$current" -lt "$target_dbs" ]; then
             log_info "Increasing Redis databases from ${current:-16} to ${target_dbs} in $conf..."
-            if grep -qE "^\s*databases\s+" "$conf"; then
-                sed -i -E "s/^\s*databases\s+[0-9]+/databases ${target_dbs}/" "$conf"
+            if grep -qE "^[[:space:]]*databases[[:space:]]+" "$conf"; then
+                sed_i -E "s/^[[:space:]]*databases[[:space:]]+[0-9]+/databases ${target_dbs}/" "$conf"
             else
                 echo -e "\ndatabases ${target_dbs}" >> "$conf"
             fi
@@ -71,24 +71,87 @@ ensure_redis_databases() {
     fi
 }
 
+get_existing_wp_redis_db() {
+    local domain="$1"
+    local docroot="${2:-/www/wwwroot/${domain}}"
+    local registry="${3:-/opt/wp-isolate/data/sites.json}"
+    local wp_config="$docroot/wp-config.php"
+
+    # 1. Check existing WP_REDIS_DATABASE in wp-config.php
+    if [ -f "$wp_config" ]; then
+        local val
+        val=$(grep -E "define[[:space:]]*\([[:space:]]*['\"]WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*[0-9]+" "$wp_config" 2>/dev/null \
+              | sed -E "s/.*WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*([0-9]+).*/\1/" | head -n 1 || true)
+        if [ -n "$val" ] && [[ "$val" =~ ^[0-9]+$ ]]; then
+            echo "$val"
+            return 0
+        fi
+    fi
+
+    # 2. Check existing record in sites.json registry
+    if [ -f "$registry" ] && command -v python3 >/dev/null 2>&1; then
+        local reg_val
+        reg_val=$(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1], 'r') as f:
+        data = json.load(f)
+    val = data.get(sys.argv[2], {}).get('redis_db', '')
+    if val != '' and val is not None:
+        print(val)
+except Exception:
+    pass
+" "$registry" "$domain" 2>/dev/null || true)
+        if [ -n "$reg_val" ] && [[ "$reg_val" =~ ^[0-9]+$ ]]; then
+            echo "$reg_val"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 get_next_available_redis_db() {
     local registry="${1:-/opt/wp-isolate/data/sites.json}"
+    local exclude_domain="${2:-}"
     local used_ids=()
 
-    # Read used IDs from registry JSON
+    # Read used IDs from registry JSON (excluding exclude_domain if provided)
     if [ -f "$registry" ]; then
-        while read -r num; do
-            [ -n "$num" ] && used_ids+=("$num")
-        done < <(grep -oE '"redis_db":\s*[0-9]+' "$registry" | awk -F: '{print $2}' | tr -d ' ' || true)
+        if [ -n "$exclude_domain" ] && command -v python3 >/dev/null 2>&1; then
+            while read -r num; do
+                [ -n "$num" ] && used_ids+=("$num")
+            done < <(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1], 'r') as f:
+        data = json.load(f)
+    ex = sys.argv[2]
+    for d, info in data.items():
+        if d != ex and isinstance(info, dict) and 'redis_db' in info:
+            r = str(info['redis_db'])
+            if r.isdigit():
+                print(r)
+except Exception:
+    pass
+" "$registry" "$exclude_domain" 2>/dev/null || true)
+        else
+            while read -r num; do
+                [ -n "$num" ] && used_ids+=("$num")
+            done < <(grep -oE '"redis_db":\s*[0-9]+' "$registry" | awk -F: '{print $2}' | tr -d ' ' || true)
+        fi
     fi
 
     # Also scan /www/wwwroot/*/wp-config.php to avoid collision with manual setups
     if [ -d "/www/wwwroot" ]; then
         for cfg in /www/wwwroot/*/wp-config.php; do
             [ -f "$cfg" ] || continue
+            if [ -n "$exclude_domain" ] && [[ "$cfg" == *"/www/wwwroot/${exclude_domain}/"* ]]; then
+                continue
+            fi
             local val
-            val=$(grep -E "define\s*\(\s*['\"]WP_REDIS_DATABASE['\"]\s*,\s*[0-9]+" "$cfg" 2>/dev/null \
-                  | sed -E "s/.*WP_REDIS_DATABASE['\"]\s*,\s*([0-9]+).*/\1/" | head -n 1 || true)
+            val=$(grep -E "define[[:space:]]*\([[:space:]]*['\"]WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*[0-9]+" "$cfg" 2>/dev/null \
+                  | sed -E "s/.*WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*([0-9]+).*/\1/" | head -n 1 || true)
             if [ -n "$val" ]; then
                 used_ids+=("$val")
             fi
@@ -129,8 +192,17 @@ apply_wp_redis_config() {
 
     log_info "Configuring Redis cache isolation for $domain (DB ID: $db_id, Prefix: $clean_prefix)..."
 
-    # Remove any existing WP-ISOLATE REDIS block
-    remove_wp_redis_config "$domain" "$docroot" "$db_id"
+    # If the domain previously had a different DB ID, flush that obsolete DB to prevent orphan cache in Redis
+    local old_db=""
+    old_db=$(grep -E "define[[:space:]]*\([[:space:]]*['\"]WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*[0-9]+" "$wp_config" 2>/dev/null \
+             | sed -E "s/.*WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*([0-9]+).*/\1/" | head -n 1 || true)
+    if [ -n "$old_db" ] && [ "$old_db" != "$db_id" ] && command -v redis-cli >/dev/null 2>&1; then
+        log_info "Flushing obsolete Redis cache from previous Database ID: $old_db..."
+        redis-cli -n "$old_db" FLUSHDB >/dev/null 2>&1 || true
+    fi
+
+    # Remove any existing WP-ISOLATE REDIS block from file (pass empty db_id so it doesn't wipe active cache)
+    remove_wp_redis_config "$domain" "$docroot" ""
 
     # Handle immutable .user.ini / permissions if needed
     local is_readonly=false
@@ -153,14 +225,12 @@ if ( ! defined( 'WP_CACHE_KEY_SALT' ) ) {
 EOF
 )
 
-    awk -v b="$block" '
-        NR == 1 {
-            print
-            print b
-            next
-        }
-        { print }
-    ' "$wp_config" > "${wp_config}.tmp" && mv "${wp_config}.tmp" "$wp_config"
+    # Inject right after first line
+    {
+        head -n 1 "$wp_config"
+        printf "%s\n" "$block"
+        tail -n +2 "$wp_config"
+    } > "${wp_config}.tmp" && mv "${wp_config}.tmp" "$wp_config"
 
     # Maintain permissions
     local user
@@ -187,7 +257,7 @@ remove_wp_redis_config() {
     local wp_config="$docroot/wp-config.php"
 
     if [ -f "$wp_config" ]; then
-        sed -i '/\/\* BEGIN WP-ISOLATE REDIS \*\//,/\/\* END WP-ISOLATE REDIS \*\//d' "$wp_config"
+        sed_i '/\/\* BEGIN WP-ISOLATE REDIS \*\//,/\/\* END WP-ISOLATE REDIS \*\//d' "$wp_config"
         local user
         if command -v get_site_user >/dev/null 2>&1; then
             user=$(get_site_user "$domain")
