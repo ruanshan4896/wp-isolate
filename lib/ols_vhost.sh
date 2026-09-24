@@ -3,9 +3,10 @@
 
 detect_ols_vhost_file() {
     local domain="$1"
+    local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
     local candidates=(
-        "/www/server/panel/vhost/openlitespeed/${domain}.conf"
-        "/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+        "${vhost_panel_dir}/${domain}.conf"
+        "${vhost_panel_dir}/detail/${domain}.conf"
         "/usr/local/lsws/conf/vhosts/${domain}/vhconf.conf"
     )
     for f in "${candidates[@]}"; do
@@ -20,6 +21,7 @@ detect_ols_vhost_file() {
 detect_vhost_docroot() {
     local domain="$1"
     local vhost_file="${2:-}"
+    local wwwroot_dir="${AAPANEL_WWWROOT_DIR:-/www/wwwroot}"
     if [ -z "$vhost_file" ]; then
         vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
     fi
@@ -33,8 +35,8 @@ detect_vhost_docroot() {
         fi
     fi
 
-    if [ -d "/www/wwwroot/${domain}" ]; then
-        echo "/www/wwwroot/${domain}"
+    if [ -d "${wwwroot_dir}/${domain}" ]; then
+        echo "${wwwroot_dir}/${domain}"
         return 0
     fi
     return 1

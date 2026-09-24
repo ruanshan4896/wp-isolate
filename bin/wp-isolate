@@ -20,6 +20,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 source "${SCRIPT_DIR}/lib/os_user.sh"
 source "${SCRIPT_DIR}/lib/ols_vhost.sh"
 source "${SCRIPT_DIR}/lib/mysql_limit.sh"
+source "${SCRIPT_DIR}/lib/redis_isolate.sh"
 
 # Paths
 BASE_DIR="${WP_ISOLATE_DIR:-/opt/wp-isolate}"
@@ -32,6 +33,50 @@ init_storage() {
     mkdir -p "$VHOSTS_DIR" "$BACKUPS_DIR" "$DATA_DIR"
     if [ ! -f "$SITES_REGISTRY" ]; then
         echo "{}" > "$SITES_REGISTRY"
+    fi
+}
+
+update_site_registry() {
+    local domain="$1"
+    local user="$2"
+    local redis_db="$3"
+    local reg="${SITES_REGISTRY:-/opt/wp-isolate/data/sites.json}"
+    mkdir -p "$(dirname "$reg")"
+    if [ ! -f "$reg" ]; then echo "{}" > "$reg"; fi
+    
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import json, sys
+reg_file, domain, user, r_db = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    with open(reg_file, 'r') as f:
+        data = json.load(f)
+except Exception:
+    data = {}
+data[domain] = {'user': user, 'redis_db': int(r_db) if r_db.isdigit() else r_db}
+with open(reg_file, 'w') as f:
+    json.dump(data, f, indent=2)
+" "$reg" "$domain" "$user" "$redis_db" 2>/dev/null || true
+    fi
+}
+
+remove_from_registry() {
+    local domain="$1"
+    local reg="${SITES_REGISTRY:-/opt/wp-isolate/data/sites.json}"
+    if [ -f "$reg" ] && command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import json, sys
+reg_file, domain = sys.argv[1], sys.argv[2]
+try:
+    with open(reg_file, 'r') as f:
+        data = json.load(f)
+    if domain in data:
+        del data[domain]
+    with open(reg_file, 'w') as f:
+        json.dump(data, f, indent=2)
+except Exception:
+    pass
+" "$reg" "$domain" 2>/dev/null || true
     fi
 }
 
@@ -53,6 +98,8 @@ Options for 'isolate':
   --mem-limit <size>            Max memory limit e.g. 512M (Default: 512M)
   --db-limit <num>              Max MySQL connections for site DB user (Default: 25)
   --req-limit <num>             Max dynamic requests/sec per client IP (Default: 10)
+  --redis-db <num>              Custom Redis Database ID (Default: auto-allocated 1..63)
+  --no-redis                    Skip Redis cache isolation configuration
   --docroot <path>              Override website document root path
 
 Examples:
@@ -65,14 +112,16 @@ EOF
 
 cmd_list() {
     init_storage
-    printf "%-30s | %-12s | %-20s | %-10s | %-10s\n" "DOMAIN" "STATUS" "LINUX USER" "PHP VER" "MAX CONNS"
-    echo "--------------------------------------------------------------------------------------------------"
+    printf "%-25s | %-10s | %-20s | %-8s | %-10s | %-10s\n" "DOMAIN" "STATUS" "LINUX USER" "PHP VER" "MAX CONNS" "REDIS DB"
+    echo "-------------------------------------------------------------------------------------------------------------"
 
     local domains=()
+    local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+    local wwwroot_dir="${AAPANEL_WWWROOT_DIR:-/www/wwwroot}"
 
     # Discover domains from aaPanel OLS directory
-    if [ -d "/www/server/panel/vhost/openlitespeed" ]; then
-        for f in /www/server/panel/vhost/openlitespeed/*.conf; do
+    if [ -d "$vhost_panel_dir" ]; then
+        for f in "$vhost_panel_dir"/*.conf; do
             [ -e "$f" ] || continue
             local d
             d=$(basename "$f" .conf)
@@ -81,9 +130,9 @@ cmd_list() {
         done
     fi
 
-    # Fallback to scanning /www/wwwroot/
-    if [ ${#domains[@]} -eq 0 ] && [ -d "/www/wwwroot" ]; then
-        for d in /www/wwwroot/*; do
+    # Fallback to scanning wwwroot
+    if [ ${#domains[@]} -eq 0 ] && [ -d "$wwwroot_dir" ]; then
+        for d in "$wwwroot_dir"/*; do
             [ -d "$d" ] || continue
             local name
             name=$(basename "$d")
@@ -98,12 +147,18 @@ cmd_list() {
     fi
 
     for domain in "${domains[@]}"; do
-        local outer_file="/www/server/panel/vhost/openlitespeed/${domain}.conf"
-        local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+        local outer_file="${vhost_panel_dir}/${domain}.conf"
+        local detail_file="${vhost_panel_dir}/detail/${domain}.conf"
         local status="DEFAULT"
         local user="www"
         local php_ver="-"
         local max_conns="-"
+        local redis_db="-"
+
+        local vhost_file
+        vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
+        local docroot
+        docroot=$(detect_vhost_docroot "$domain" "$vhost_file" 2>/dev/null || echo "/www/wwwroot/${domain}")
 
         if ([ -f "$detail_file" ] && grep -qE "extUser\s+iso_" "$detail_file" 2>/dev/null) || \
            ([ -f "$outer_file" ] && grep -qE "setUIDMode\s+2|WP-ISOLATE" "$outer_file" 2>/dev/null); then
@@ -115,7 +170,15 @@ cmd_list() {
             fi
         fi
 
-        printf "%-30s | %-12s | %-20s | %-10s | %-10s\n" "$domain" "$status" "$user" "$php_ver" "$max_conns"
+        if [ -f "$docroot/wp-config.php" ]; then
+            local r_val
+            r_val=$(grep -E "WP_REDIS_DATABASE" "$docroot/wp-config.php" 2>/dev/null | grep -oE "[0-9]+" | head -n 1 || true)
+            if [ -n "$r_val" ]; then
+                redis_db="DB ${r_val}"
+            fi
+        fi
+
+        printf "%-25s | %-10s | %-20s | %-8s | %-10s | %-10s\n" "$domain" "$status" "$user" "$php_ver" "$max_conns" "$redis_db"
     done
 }
 
@@ -126,6 +189,8 @@ cmd_isolate() {
     local db_limit=25
     local req_limit=10
     local custom_docroot=""
+    local custom_redis_db=""
+    local enable_redis=true
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -133,6 +198,8 @@ cmd_isolate() {
             --mem-limit) mem_limit="$2"; shift 2 ;;
             --db-limit) db_limit="$2"; shift 2 ;;
             --req-limit) req_limit="$2"; shift 2 ;;
+            --redis-db) custom_redis_db="$2"; shift 2 ;;
+            --no-redis) enable_redis=false; shift 1 ;;
             --docroot) custom_docroot="$2"; shift 2 ;;
             -*) log_error "Unknown option: $1"; exit 1 ;;
             *)
@@ -201,11 +268,26 @@ cmd_isolate() {
         set_mysql_user_limit "$db_user" "$db_limit"
     fi
 
-    # Step 6: Syntax Verification & Graceful Reload (Fail-Safe Rollback Engine)
+    # Step 6: Configure Redis Cache Isolation
+    local redis_db=""
+    if [ "$enable_redis" = true ] && ([ -f "$docroot/wp-config.php" ] || is_redis_available); then
+        ensure_redis_databases 64
+        if [ -n "$custom_redis_db" ]; then
+            redis_db="$custom_redis_db"
+        else
+            redis_db=$(get_next_available_redis_db "$SITES_REGISTRY")
+        fi
+        apply_wp_redis_config "$domain" "$docroot" "$redis_db"
+    fi
+
+    # Step 7: Syntax Verification & Graceful Reload (Fail-Safe Rollback Engine)
     if ! verify_and_reload_ols; then
         log_error "OpenLiteSpeed validation failed! Initiating IMMEDIATE AUTO-ROLLBACK..."
         [ -f "${backup_dir}/vhost.conf" ] && cp "${backup_dir}/vhost.conf" "$outer_file"
         [ -f "${backup_dir}/detail.conf" ] && cp "${backup_dir}/detail.conf" "$detail_file"
+        if [ -n "$redis_db" ]; then
+            remove_wp_redis_config "$domain" "$docroot" "$redis_db"
+        fi
         restore_site_permissions "$domain" "$docroot"
         remove_isolated_user "$domain"
         verify_and_reload_ols || true
@@ -213,6 +295,7 @@ cmd_isolate() {
         return 1
     fi
 
+    update_site_registry "$domain" "$user" "${redis_db:-}"
     log_success "Website $domain successfully ISOLATED!"
 }
 
@@ -239,6 +322,14 @@ cmd_restore() {
     if [ -n "$db_user" ]; then
         remove_mysql_user_limit "$db_user"
     fi
+
+    # Remove Redis cache configuration and flush isolated DB
+    local redis_db=""
+    if [ -f "$docroot/wp-config.php" ]; then
+        redis_db=$(grep -E "WP_REDIS_DATABASE" "$docroot/wp-config.php" 2>/dev/null | grep -oE "[0-9]+" | head -n 1 || true)
+    fi
+    remove_wp_redis_config "$domain" "$docroot" "$redis_db"
+    remove_from_registry "$domain"
 
     remove_isolated_user "$domain"
     rm -rf "${VHOSTS_DIR:?}/${domain}" 2>/dev/null || true
@@ -279,6 +370,19 @@ cmd_status() {
         local active_workers
         active_workers=$(pgrep -u "$user" 2>/dev/null | wc -l || echo "0")
         echo "Active PHP Workers:  $active_workers"
+
+        if [ -f "$docroot/wp-config.php" ]; then
+            local r_val
+            r_val=$(grep -E "WP_REDIS_DATABASE" "$docroot/wp-config.php" 2>/dev/null | grep -oE "[0-9]+" | head -n 1 || true)
+            local r_salt
+            r_salt=$(grep -E "WP_CACHE_KEY_SALT" "$docroot/wp-config.php" 2>/dev/null | sed -E "s/.*WP_CACHE_KEY_SALT['\"]\s*,\s*['\"]([^'\"]+)['\"].*/\1/" | head -n 1 || true)
+            if [ -n "$r_val" ]; then
+                echo "Redis Database ID:   DB $r_val"
+                echo "Redis Key Salt:      $r_salt"
+            else
+                echo "Redis Database:      Not configured"
+            fi
+        fi
     else
         echo "Status:              DEFAULT (Shared user www:www)"
         echo "Document Root:       $docroot"
@@ -345,13 +449,14 @@ cmd_repair() {
 cmd_isolate_all() {
     log_info "Scanning for all unisolated websites on aaPanel..."
     local count=0
-    if [ -d "/www/server/panel/vhost/openlitespeed" ]; then
-        for f in /www/server/panel/vhost/openlitespeed/*.conf; do
+    local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+    if [ -d "$vhost_panel_dir" ]; then
+        for f in "$vhost_panel_dir"/*.conf; do
             [ -e "$f" ] || continue
             local domain
             domain=$(basename "$f" .conf)
             [[ "$domain" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
-            local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+            local detail_file="${vhost_panel_dir}/detail/${domain}.conf"
             local is_already_isolated=false
             if [ -f "$detail_file" ] && grep -qE "^\s*extUser\s+iso_" "$detail_file" 2>/dev/null && grep -q "setUIDMode 2" "$f" 2>/dev/null; then
                 is_already_isolated=true

@@ -51,6 +51,17 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 │  [ Lớp 4: Concurrency Limit ]                                                          │
 │   └── ALTER USER 'db_user'@'localhost' WITH MAX_USER_CONNECTIONS 25                    │
 │       (Site bị tấn công không thể chiếm hết connection pool của MySQL)                 │
+└────────────────────────────────────────────┬───────────────────────────────────────────┘
+                                             │
+                                             ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ Redis Object Cache Isolation (Layer 5)                                                 │
+│                                                                                        │
+│  [ Lớp 5: Database ID & Cache Key Salt Isolation ]                                     │
+│   ├── Auto-Scaling: Tự động nâng số databases từ 16 lên 64 trong redis.conf            │
+│   ├── Auto-Allocation: Cấp phát Database ID riêng biệt (1..63) cho từng website       │
+│   ├── wp-config.php: Tự động tiêm WP_REDIS_DATABASE & WP_CACHE_KEY_SALT                │
+│   └── Chống đè cache (Cache Collision), an toàn tuyệt đối khi dùng Object Cache        │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -96,6 +107,8 @@ wp-isolate isolate mywebsite.com \
 - `--mem-limit`: Giới hạn RAM tối đa cho tiến trình (Mặc định: 512M).
 - `--db-limit`: Số kết nối MySQL tối đa cho user database của site (Mặc định: 25).
 - `--req-limit`: Số request động/giây tối đa trên mỗi IP truy cập (Mặc định: 10 req/s).
+- `--redis-db`: Chỉ định Redis Database ID thủ công (Mặc định: tự động cấp phát 1..63).
+- `--no-redis`: Bỏ qua cấu hình Redis Cache cho website.
 
 ### 3. Cô lập hàng loạt tất cả các site
 Tự động quét và cô lập mọi website đang chạy chung user mặc định `www`:
@@ -113,7 +126,7 @@ wp-isolate restore mywebsite.com
 ```bash
 wp-isolate status mywebsite.com
 ```
-Hiển thị đầy đủ thông tin: User Linux, số tiến trình PHP đang chạy thực tế, socket, mức RAM giới hạn và số kết nối MySQL.
+Hiển thị đầy đủ thông tin: User Linux, số tiến trình PHP đang chạy thực tế, socket, mức RAM giới hạn, số kết nối MySQL, và Redis Database ID / Key Salt.
 
 ### 6. Kiểm tra & Tự động sửa chữa (Audit & Repair)
 Nếu bạn vừa chỉnh sửa cấu hình domain trên giao diện aaPanel và nghi ngờ aaPanel đã ghi đè cấu hình:
@@ -132,7 +145,7 @@ wp-isolate repair
 ## Cơ Chế An Toàn (Fail-Safe & Auto-Rollback)
 
 - **Tự động Backup**: Mỗi khi thực hiện `isolate`, cấu hình ban đầu được sao lưu tại `/opt/wp-isolate/backups/<domain>/<timestamp>/`.
-- **Pre-flight Syntax Test**: Kiểm tra cú pháp OpenLiteSpeed bằng `/usr/local/lsws/bin/lswsctrl test`.
+- **Pre-flight Syntax Test**: Kiểm tra cú pháp OpenLiteSpeed bằng `/usr/local/lsws/bin/openlitespeed -t`.
 - **Atomic Rollback**: Nếu có bất kỳ lỗi nào trong quá trình kiểm tra cú pháp hoặc nạp dịch vụ, hệ thống **ngay lập tức đảo ngược thay đổi** về trạng thái backup ban đầu chỉ trong 1 giây, cam kết không gây gián đoạn website (Zero Downtime).
 
 ---
@@ -147,14 +160,15 @@ wp-isolate repair
 │   ├── common.sh                # Helper dùng chung, kiểm tra môi trường
 │   ├── os_user.sh               # Quản lý Linux user & POSIX ACL
 │   ├── ols_vhost.sh             # Điều khiển cấu hình OpenLiteSpeed & suEXEC
-│   └── mysql_limit.sh           # Quản lý giới hạn kết nối MySQL
+│   ├── mysql_limit.sh           # Quản lý giới hạn kết nối MySQL
+│   └── redis_isolate.sh         # Quản lý cô lập Redis Object Cache
 ├── templates/
 │   └── ols_isolate.conf.tpl     # Mẫu cấu hình OLS độc lập per-vhost
 ├── vhosts/                      # Cấu hình đã cô lập của từng domain
 ├── backups/                     # Thư mục lưu trữ backup tự động
 ├── data/
 │   └── sites.json               # Cơ sở dữ liệu trạng thái hệ thống
-└── tests/                       # Bộ kiểm thử tự động (6 test suites)
+└── tests/                       # Bộ kiểm thử tự động (7 test suites)
 ```
 
 ## Chạy Bộ Kiểm Thử (Run Tests)
