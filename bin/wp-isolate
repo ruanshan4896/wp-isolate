@@ -3,7 +3,17 @@
 set -eu
 set -o pipefail 2>/dev/null || true
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve real path of the script even when executed via symlink
+TARGET_SCRIPT="${BASH_SOURCE[0]}"
+if [ -h "$TARGET_SCRIPT" ] || command -v readlink >/dev/null 2>&1; then
+    TARGET_SCRIPT="$(readlink -f "$TARGET_SCRIPT" 2>/dev/null || realpath "$TARGET_SCRIPT" 2>/dev/null || echo "$TARGET_SCRIPT")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$TARGET_SCRIPT")/.." && pwd)"
+
+# Fallback to standard installation directory if lib is not in SCRIPT_DIR
+if [ ! -d "${SCRIPT_DIR}/lib" ] && [ -d "/opt/wp-isolate/lib" ]; then
+    SCRIPT_DIR="/opt/wp-isolate"
+fi
 
 # Source libraries
 source "${SCRIPT_DIR}/lib/common.sh"
