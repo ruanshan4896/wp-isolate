@@ -77,18 +77,7 @@ get_existing_wp_redis_db() {
     local registry="${3:-/opt/wp-isolate/data/sites.json}"
     local wp_config="$docroot/wp-config.php"
 
-    # 1. Check existing WP_REDIS_DATABASE in wp-config.php
-    if [ -f "$wp_config" ]; then
-        local val
-        val=$(grep -E "define[[:space:]]*\([[:space:]]*['\"]WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*[0-9]+" "$wp_config" 2>/dev/null \
-              | sed -E "s/.*WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*([0-9]+).*/\1/" | head -n 1 || true)
-        if [ -n "$val" ] && [[ "$val" =~ ^[0-9]+$ ]]; then
-            echo "$val"
-            return 0
-        fi
-    fi
-
-    # 2. Check existing record in sites.json registry
+    # 1. Check existing record in sites.json registry for this specific domain
     if [ -f "$registry" ] && command -v python3 >/dev/null 2>&1; then
         local reg_val
         reg_val=$(python3 -c "
@@ -97,14 +86,42 @@ try:
     with open(sys.argv[1], 'r') as f:
         data = json.load(f)
     val = data.get(sys.argv[2], {}).get('redis_db', '')
-    if val != '' and val is not None:
+    if val != '' and val is not None and int(val) > 0:
         print(val)
 except Exception:
     pass
 " "$registry" "$domain" 2>/dev/null || true)
-        if [ -n "$reg_val" ] && [[ "$reg_val" =~ ^[0-9]+$ ]]; then
+        if [ -n "$reg_val" ] && [ "$reg_val" -gt 0 ] 2>/dev/null; then
             echo "$reg_val"
             return 0
+        fi
+    fi
+
+    # 2. Check existing WP_REDIS_DATABASE or LSCache constant in wp-config.php
+    # Must be > 0 (database 0 is the unisolated shared default) and not claimed by another site
+    if [ -f "$wp_config" ]; then
+        local val
+        val=$(grep -E "define[[:space:]]*\([[:space:]]*['\"](WP_REDIS_DATABASE|LITESPEED_CONF__OBJECT__DB_ID)['\"][[:space:]]*,[[:space:]]*[0-9]+" "$wp_config" 2>/dev/null \
+              | sed -E "s/.*(WP_REDIS_DATABASE|LITESPEED_CONF__OBJECT__DB_ID)['\"][[:space:]]*,[[:space:]]*([0-9]+).*/\2/" | head -n 1 || true)
+        if [ -n "$val" ] && [ "$val" -gt 0 ] 2>/dev/null; then
+            local is_taken=false
+            if [ -f "$registry" ] && command -v python3 >/dev/null 2>&1; then
+                is_taken=$(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1], 'r') as f:
+        data = json.load(f)
+    cur_d, target_id = sys.argv[2], int(sys.argv[3])
+    found = any(d != cur_d and isinstance(info, dict) and info.get('redis_db') == target_id for d, info in data.items())
+    print('true' if found else 'false')
+except Exception:
+    print('false')
+" "$registry" "$domain" "$val" 2>/dev/null || echo "false")
+            fi
+            if [ "$is_taken" = "false" ]; then
+                echo "$val"
+                return 0
+            fi
         fi
     fi
 
@@ -130,7 +147,7 @@ try:
     for d, info in data.items():
         if d != ex and isinstance(info, dict) and 'redis_db' in info:
             r = str(info['redis_db'])
-            if r.isdigit():
+            if r.isdigit() and int(r) > 0:
                 print(r)
 except Exception:
     pass
@@ -152,7 +169,7 @@ except Exception:
             local val
             val=$(grep -E "define[[:space:]]*\([[:space:]]*['\"]WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*[0-9]+" "$cfg" 2>/dev/null \
                   | sed -E "s/.*WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*([0-9]+).*/\1/" | head -n 1 || true)
-            if [ -n "$val" ]; then
+            if [ -n "$val" ] && [ "$val" -gt 0 ] 2>/dev/null; then
                 used_ids+=("$val")
             fi
         done
@@ -194,9 +211,9 @@ apply_wp_redis_config() {
 
     # If the domain previously had a different DB ID, flush that obsolete DB to prevent orphan cache in Redis
     local old_db=""
-    old_db=$(grep -E "define[[:space:]]*\([[:space:]]*['\"]WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*[0-9]+" "$wp_config" 2>/dev/null \
-             | sed -E "s/.*WP_REDIS_DATABASE['\"][[:space:]]*,[[:space:]]*([0-9]+).*/\1/" | head -n 1 || true)
-    if [ -n "$old_db" ] && [ "$old_db" != "$db_id" ] && command -v redis-cli >/dev/null 2>&1; then
+    old_db=$(grep -E "define[[:space:]]*\([[:space:]]*['\"](WP_REDIS_DATABASE|LITESPEED_CONF__OBJECT__DB_ID)['\"][[:space:]]*,[[:space:]]*[0-9]+" "$wp_config" 2>/dev/null \
+             | sed -E "s/.*(WP_REDIS_DATABASE|LITESPEED_CONF__OBJECT__DB_ID)['\"][[:space:]]*,[[:space:]]*([0-9]+).*/\2/" | head -n 1 || true)
+    if [ -n "$old_db" ] && [ "$old_db" != "$db_id" ] && [ "$old_db" -gt 0 ] 2>/dev/null && command -v redis-cli >/dev/null 2>&1; then
         log_info "Flushing obsolete Redis cache from previous Database ID: $old_db..."
         redis-cli -n "$old_db" FLUSHDB >/dev/null 2>&1 || true
     fi
@@ -215,11 +232,29 @@ apply_wp_redis_config() {
     block=$(cat << EOF
 
 /* BEGIN WP-ISOLATE REDIS */
+// Standard Redis Object Cache (Till Krüss / Pantheon)
 if ( ! defined( 'WP_REDIS_DATABASE' ) ) {
     define( 'WP_REDIS_DATABASE', ${db_id} );
 }
 if ( ! defined( 'WP_CACHE_KEY_SALT' ) ) {
     define( 'WP_CACHE_KEY_SALT', '${clean_prefix}' );
+}
+
+// LiteSpeed Cache (LSCWP) Native Object Cache Overrides
+if ( ! defined( 'LITESPEED_CONF' ) ) {
+    define( 'LITESPEED_CONF', true );
+}
+if ( ! defined( 'LITESPEED_CONF__OBJECT__DB_ID' ) ) {
+    define( 'LITESPEED_CONF__OBJECT__DB_ID', ${db_id} );
+}
+if ( ! defined( 'LITESPEED_CONF__OBJECT__KEY_PREFIX' ) ) {
+    define( 'LITESPEED_CONF__OBJECT__KEY_PREFIX', '${clean_prefix}' );
+}
+if ( ! defined( 'LITESPEED_CONF__CACHE_OBJECT_DB_ID' ) ) {
+    define( 'LITESPEED_CONF__CACHE_OBJECT_DB_ID', ${db_id} );
+}
+if ( ! defined( 'LITESPEED_CONF__CACHE__OBJECT__DB_ID' ) ) {
+    define( 'LITESPEED_CONF__CACHE__OBJECT__DB_ID', ${db_id} );
 }
 /* END WP-ISOLATE REDIS */
 EOF
@@ -289,9 +324,32 @@ sync_litespeed_redis_config() {
 
     log_info "Synchronizing Redis Database ID ($db_id) to LiteSpeed Cache plugin for $domain..."
 
+    local site_user
+    if command -v get_site_user >/dev/null 2>&1; then
+        site_user=$(get_site_user "$domain")
+    else
+        site_user=$(sanitize_domain_to_user "$domain")
+    fi
+
+    # Step 1: Ensure LiteSpeed object-cache.php drop-in is copied to wp-content/object-cache.php
+    local oc_dropin="$docroot/wp-content/object-cache.php"
+    for cand in "$lscache_dir/lib/object-cache.php" "$lscache_dir/src/object-cache.php"; do
+        if [ -f "$cand" ]; then
+            if [ ! -f "$oc_dropin" ] || ! grep -qi "litespeed" "$oc_dropin" 2>/dev/null; then
+                cp "$cand" "$oc_dropin" 2>/dev/null || true
+                if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+                    chown "${site_user}:${site_user}" "$oc_dropin" 2>/dev/null || true
+                fi
+                chmod 644 "$oc_dropin" 2>/dev/null || true
+                log_info "Installed LiteSpeed object-cache.php drop-in for $domain."
+            fi
+            break
+        fi
+    done
+
     local synced=false
 
-    # Method 1: Check WP-CLI if available
+    # Step 2: Try WP-CLI if available
     local wp_cli=""
     if command -v wp >/dev/null 2>&1; then
         wp_cli="wp"
@@ -313,34 +371,43 @@ sync_litespeed_redis_config() {
         fi
     fi
 
-    # Method 2: Bootstrapped PHP execution via WordPress core (works independently of WP-CLI)
+    # Step 3: File-based PHP execution via WordPress core (compatible with both standard PHP CLI and lsphp)
     local php_bin
     php_bin=$(detect_php_cli 2>/dev/null || true)
     if [ -n "$php_bin" ]; then
-        $php_bin -d error_reporting=0 -r "
+        local sync_script="${docroot}/.wp-isolate-sync-${db_id}.php"
+        cat << 'EOF' > "$sync_script"
+<?php
 define('WP_USE_THEMES', false);
 define('DOING_CRON', true);
-if (file_exists('$wp_config')) {
-    require_once '$docroot/wp-load.php';
+$root = dirname(__FILE__);
+if (file_exists($root . '/wp-load.php')) {
+    require_once $root . '/wp-load.php';
     if (function_exists('update_option')) {
+        $db_id = intval($argv[1] ?? 0);
+        $prefix = strval($argv[2] ?? '');
+
+        // 1. LiteSpeed Cache modern individual options
         update_option('litespeed.conf.cache-object', 1);
         update_option('litespeed.conf.cache-object-kind', 2);
         update_option('litespeed.conf.cache-object-host', '127.0.0.1');
         update_option('litespeed.conf.cache-object-port', 6379);
         update_option('litespeed.conf.cache-object-db_id', $db_id);
-        update_option('litespeed.conf.cache-object-key_prefix', '$clean_prefix');
+        update_option('litespeed.conf.cache-object-key_prefix', $prefix);
 
-        \$conf = get_option('litespeed-conf');
-        if (is_array(\$conf)) {
-            \$conf['cache-object'] = 1;
-            \$conf['cache-object-kind'] = 2;
-            \$conf['cache-object-host'] = '127.0.0.1';
-            \$conf['cache-object-port'] = 6379;
-            \$conf['cache-object-db_id'] = $db_id;
-            \$conf['cache-object-key_prefix'] = '$clean_prefix';
-            update_option('litespeed-conf', \$conf);
+        // 2. LiteSpeed Cache serialized options array
+        $conf = get_option('litespeed-conf');
+        if (is_array($conf)) {
+            $conf['cache-object'] = 1;
+            $conf['cache-object-kind'] = 2;
+            $conf['cache-object-host'] = '127.0.0.1';
+            $conf['cache-object-port'] = 6379;
+            $conf['cache-object-db_id'] = $db_id;
+            $conf['cache-object-key_prefix'] = $prefix;
+            update_option('litespeed-conf', $conf);
         }
 
+        // 3. Native LiteSpeed Cache API call if loaded
         if (class_exists('LiteSpeed\Conf') && method_exists('LiteSpeed\Conf', 'get_instance')) {
             try {
                 \LiteSpeed\Conf::get_instance()->update_confs([
@@ -349,13 +416,15 @@ if (file_exists('$wp_config')) {
                     'cache-object-host' => '127.0.0.1',
                     'cache-object-port' => 6379,
                     'cache-object-db_id' => $db_id,
-                    'cache-object-key_prefix' => '$clean_prefix',
+                    'cache-object-key_prefix' => $prefix,
                 ]);
-            } catch (Exception \$e) {}
+            } catch (Exception $e) {}
         }
     }
 }
-" 2>/dev/null || true
+EOF
+        $php_bin "$sync_script" "$db_id" "$clean_prefix" >/dev/null 2>&1 || true
+        rm -f "$sync_script"
         synced=true
     fi
 

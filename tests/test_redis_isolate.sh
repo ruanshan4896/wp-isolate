@@ -24,6 +24,8 @@ EOF
     grep -q "BEGIN WP-ISOLATE REDIS" "${tmp_dir}/wp-config.php" || { echo "Redis block missing"; exit 1; }
     grep -q "define( 'WP_REDIS_DATABASE', 3 )" "${tmp_dir}/wp-config.php" || { echo "DB ID mismatch"; exit 1; }
     grep -q "define( 'WP_CACHE_KEY_SALT', 'my_site_com_' )" "${tmp_dir}/wp-config.php" || { echo "Salt mismatch"; exit 1; }
+    grep -q "define( 'LITESPEED_CONF__OBJECT__DB_ID', 3 )" "${tmp_dir}/wp-config.php" || { echo "LSCache DB ID mismatch"; exit 1; }
+    grep -q "define( 'LITESPEED_CONF__OBJECT__KEY_PREFIX', 'my_site_com_' )" "${tmp_dir}/wp-config.php" || { echo "LSCache prefix mismatch"; exit 1; }
 
     # Test idempotency (applying again doesn't duplicate)
     apply_wp_redis_config "my-site.com" "$tmp_dir" 3
@@ -86,6 +88,15 @@ EOF
     local reg_id
     reg_id=$(get_existing_wp_redis_db "site8.com" "/nonexistent" "$tmp_reg")
     [[ "$reg_id" -eq 8 ]] || { echo "Expected registry ID 8, got: $reg_id"; exit 1; }
+
+    # Test that DB 0 in wp-config is ignored (unisolated default)
+    cat << 'EOF' > "${tmp_dir}/wp-config.php"
+<?php
+define( 'WP_REDIS_DATABASE', 0 );
+EOF
+    local zero_id
+    zero_id=$(get_existing_wp_redis_db "site0.com" "$tmp_dir" "$tmp_reg" 2>/dev/null || true)
+    [[ -z "$zero_id" ]] || { echo "Expected DB 0 to be ignored, got: $zero_id"; exit 1; }
 
     rm -rf "$tmp_dir" "$tmp_reg"
     echo "test_get_existing_wp_redis_db PASS"
