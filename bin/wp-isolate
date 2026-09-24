@@ -351,7 +351,13 @@ cmd_isolate_all() {
             local domain
             domain=$(basename "$f" .conf)
             [[ "$domain" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
-            if ! grep -q "WP-ISOLATE: ${domain}" "$f" 2>/dev/null; then
+            local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+            local is_already_isolated=false
+            if [ -f "$detail_file" ] && grep -qE "^\s*extUser\s+iso_" "$detail_file" 2>/dev/null && grep -q "setUIDMode 2" "$f" 2>/dev/null; then
+                is_already_isolated=true
+            fi
+
+            if [ "$is_already_isolated" = false ]; then
                 log_info "Isolating $domain..."
                 if cmd_isolate "$domain" "$@"; then
                     count=$((count + 1))
