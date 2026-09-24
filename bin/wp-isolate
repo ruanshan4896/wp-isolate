@@ -76,6 +76,7 @@ cmd_list() {
             [ -e "$f" ] || continue
             local d
             d=$(basename "$f" .conf)
+            [[ "$d" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
             domains+=("$d")
         done
     fi
@@ -152,17 +153,21 @@ cmd_isolate() {
 
     init_storage
 
-    local docroot="${custom_docroot:-/www/wwwroot/${domain}}"
-    if [ ! -d "$docroot" ]; then
-        log_error "Website root directory $docroot not found."
-        exit 1
-    fi
-
     local vhost_file
     vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
     if [ -z "$vhost_file" ] || [ ! -f "$vhost_file" ]; then
         log_error "Could not find OpenLiteSpeed vhost file for $domain in aaPanel."
-        exit 1
+        return 1
+    fi
+
+    local docroot="${custom_docroot:-}"
+    if [ -z "$docroot" ]; then
+        docroot=$(detect_vhost_docroot "$domain" "$vhost_file" 2>/dev/null || true)
+    fi
+
+    if [ -z "$docroot" ] || [ ! -d "$docroot" ]; then
+        log_error "Website root directory ($docroot) not found for $domain."
+        return 1
     fi
 
     log_info "Starting isolation for website: $domain"
@@ -348,10 +353,14 @@ cmd_isolate_all() {
             [ -e "$f" ] || continue
             local domain
             domain=$(basename "$f" .conf)
+            [[ "$domain" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
             if ! grep -q "WP-ISOLATE: ${domain}" "$f" 2>/dev/null; then
                 log_info "Isolating $domain..."
-                cmd_isolate "$domain" "$@" || true
-                count=$((count + 1))
+                if cmd_isolate "$domain" "$@"; then
+                    count=$((count + 1))
+                else
+                    log_warn "Failed to isolate $domain. Continuing to next website..."
+                fi
             fi
         done
     fi

@@ -17,6 +17,29 @@ detect_ols_vhost_file() {
     return 1
 }
 
+detect_vhost_docroot() {
+    local domain="$1"
+    local vhost_file="${2:-}"
+    if [ -z "$vhost_file" ]; then
+        vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
+    fi
+
+    if [ -n "$vhost_file" ] && [ -f "$vhost_file" ]; then
+        local detected
+        detected=$(grep -E "^\s*docRoot\s+" "$vhost_file" | awk '{print $2}' | head -n 1 || true)
+        if [ -n "$detected" ] && [ -d "$detected" ]; then
+            echo "$detected"
+            return 0
+        fi
+    fi
+
+    if [ -d "/www/wwwroot/${domain}" ]; then
+        echo "/www/wwwroot/${domain}"
+        return 0
+    fi
+    return 1
+}
+
 detect_php_version() {
     local domain="$1"
     local vhost_file
