@@ -98,20 +98,20 @@ cmd_list() {
     fi
 
     for domain in "${domains[@]}"; do
-        local vhost_file
-        vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
+        local outer_file="/www/server/panel/vhost/openlitespeed/${domain}.conf"
+        local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
         local status="DEFAULT"
         local user="www"
         local php_ver="-"
         local max_conns="-"
 
-        if [ -n "$vhost_file" ] && grep -q "WP-ISOLATE: ${domain}" "$vhost_file" 2>/dev/null; then
+        if ([ -f "$detail_file" ] && grep -qE "extUser\s+iso_" "$detail_file" 2>/dev/null) || \
+           ([ -f "$outer_file" ] && grep -qE "setUIDMode\s+2|WP-ISOLATE" "$outer_file" 2>/dev/null); then
             status="ISOLATED"
             user=$(get_site_user "$domain")
             php_ver=$(detect_php_version "$domain")
-            local isolate_conf="${VHOSTS_DIR}/${domain}/ols_isolate.conf"
-            if [ -f "$isolate_conf" ]; then
-                max_conns=$(grep "maxConns" "$isolate_conf" | awk '{print $2}' || echo "-")
+            if [ -f "$detail_file" ]; then
+                max_conns=$(grep -E "^\s*maxConns\s+" "$detail_file" | awk '{print $2}' || echo "-")
             fi
         fi
 
@@ -177,8 +177,11 @@ cmd_isolate() {
     timestamp=$(date +%Y%m%d%H%M%S)
     local backup_dir="${BACKUPS_DIR}/${domain}/${timestamp}"
     mkdir -p "$backup_dir"
-    cp "$vhost_file" "${backup_dir}/vhost.conf"
-    log_info "Saved pre-flight backup to ${backup_dir}/vhost.conf"
+    local outer_file="/www/server/panel/vhost/openlitespeed/${domain}.conf"
+    local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+    [ -f "$outer_file" ] && cp "$outer_file" "${backup_dir}/vhost.conf"
+    [ -f "$detail_file" ] && cp "$detail_file" "${backup_dir}/detail.conf"
+    log_info "Saved pre-flight backup to ${backup_dir}/"
 
     # Step 2: Create Linux System User
     create_isolated_user "$domain" "$docroot"
@@ -186,32 +189,28 @@ cmd_isolate() {
     # Step 3: Apply Permissions & POSIX ACL
     apply_site_permissions "$domain" "$docroot"
 
-    # Step 4: Render Isolated OLS Configuration
-    local php_ver
-    php_ver=$(detect_php_version "$domain")
-    local isolate_conf="${VHOSTS_DIR}/${domain}/ols_isolate.conf"
-    render_ols_isolate_template "$domain" "$php_ver" "$max_conns" "$mem_limit" "$req_limit" "$isolate_conf" "$docroot"
+    # Step 4: Configure OpenLiteSpeed suEXEC and Limits (both outer and detail configs)
+    local user
+    user=$(get_site_user "$domain")
+    isolate_ols_vhost "$domain" "$user" "$max_conns" "$mem_limit" "$req_limit" "$docroot"
 
-    # Step 5: Inject Include into VHost
-    inject_ols_include "$domain" "$vhost_file" "$isolate_conf"
-
-    # Step 6: Limit MySQL Database Connections
+    # Step 5: Limit MySQL Database Connections
     local db_user
     db_user=$(extract_wp_db_user "$docroot" 2>/dev/null || true)
     if [ -n "$db_user" ]; then
         set_mysql_user_limit "$db_user" "$db_limit"
     fi
 
-    # Step 7: Syntax Verification & Graceful Reload (Fail-Safe Rollback Engine)
+    # Step 6: Syntax Verification & Graceful Reload (Fail-Safe Rollback Engine)
     if ! verify_and_reload_ols; then
         log_error "OpenLiteSpeed validation failed! Initiating IMMEDIATE AUTO-ROLLBACK..."
-        cp "${backup_dir}/vhost.conf" "$vhost_file"
+        [ -f "${backup_dir}/vhost.conf" ] && cp "${backup_dir}/vhost.conf" "$outer_file"
+        [ -f "${backup_dir}/detail.conf" ] && cp "${backup_dir}/detail.conf" "$detail_file"
         restore_site_permissions "$domain" "$docroot"
         remove_isolated_user "$domain"
-        rm -rf "${VHOSTS_DIR:?}/${domain}"
         verify_and_reload_ols || true
         log_error "Rollback complete. System returned to pre-isolation state."
-        exit 1
+        return 1
     fi
 
     log_success "Website $domain successfully ISOLATED!"
@@ -225,16 +224,14 @@ cmd_restore() {
     fi
 
     init_storage
-    local docroot="/www/wwwroot/${domain}"
     local vhost_file
     vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
+    local docroot
+    docroot=$(detect_vhost_docroot "$domain" "$vhost_file" 2>/dev/null || echo "/www/wwwroot/${domain}")
 
     log_info "Restoring website $domain to standard aaPanel configuration..."
 
-    if [ -n "$vhost_file" ]; then
-        remove_ols_include "$domain" "$vhost_file"
-    fi
-
+    restore_ols_vhost "$domain"
     restore_site_permissions "$domain" "$docroot"
 
     local db_user
@@ -244,7 +241,7 @@ cmd_restore() {
     fi
 
     remove_isolated_user "$domain"
-    rm -rf "${VHOSTS_DIR:?}/${domain}"
+    rm -rf "${VHOSTS_DIR:?}/${domain}" 2>/dev/null || true
 
     verify_and_reload_ols
     log_success "Website $domain restored to standard aaPanel state."

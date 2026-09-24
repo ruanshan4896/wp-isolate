@@ -200,6 +200,82 @@ remove_ols_include() {
     log_info "Removed WP-ISOLATE include block from $vhost_file."
 }
 
+isolate_ols_vhost() {
+    local domain="$1"
+    local user="$2"
+    local max_conns="${3:-15}"
+    local mem_limit="${4:-512M}"
+    local req_limit="${5:-10}"
+    local docroot="${6:-/www/wwwroot/${domain}}"
+
+    local outer_file="/www/server/panel/vhost/openlitespeed/${domain}.conf"
+    local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+
+    # Memory and process limits
+    local mem_num="${mem_limit%M}"
+    local mem_soft="$((mem_num * 80 / 100))M"
+    local mem_hard="${mem_limit}"
+    local proc_soft="$((max_conns + 5))"
+    local proc_hard="$((max_conns * 2))"
+
+    # 1. Update outer file to enable suEXEC (setUIDMode 2)
+    if [ -f "$outer_file" ]; then
+        if grep -q "setUIDMode" "$outer_file"; then
+            sed -i -E "s/setUIDMode\s+[0-9]+/setUIDMode 2/" "$outer_file"
+        else
+            sed -i "/virtualhost\s\+${domain}\s\+{/a\setUIDMode 2" "$outer_file" 2>/dev/null || true
+        fi
+        log_info "Configured suEXEC (setUIDMode 2) in $outer_file"
+    fi
+
+    # 2. Update detail file (where aaPanel defines extprocessor)
+    if [ -f "$detail_file" ]; then
+        sed -i -E "s/^\s*extUser\s+.*/  extUser                 ${user}/" "$detail_file"
+        sed -i -E "s/^\s*extGroup\s+.*/  extGroup                ${user}/" "$detail_file"
+        sed -i -E "s/^\s*maxConns\s+[0-9]+/  maxConns                ${max_conns}/" "$detail_file"
+        sed -i -E "s/^\s*memSoftLimit\s+[0-9]+M?/  memSoftLimit            ${mem_soft}/" "$detail_file"
+        sed -i -E "s/^\s*memHardLimit\s+[0-9]+M?/  memHardLimit            ${mem_hard}/" "$detail_file"
+        sed -i -E "s/^\s*procSoftLimit\s+[0-9]+/  procSoftLimit           ${proc_soft}/" "$detail_file"
+        sed -i -E "s/^\s*procHardLimit\s+[0-9]+/  procHardLimit           ${proc_hard}/" "$detail_file"
+
+        # Append Throttling Block
+        remove_ols_include "$domain" "$detail_file"
+        cat << EOF >> "$detail_file"
+
+### BEGIN WP-ISOLATE: ${domain} ###
+perClientConnLimit 25
+dynReqPerSec ${req_limit}
+outBandwidth 0
+inBandwidth 0
+blockBadReq 1
+### END WP-ISOLATE: ${domain} ###
+EOF
+        log_success "Configured suEXEC user and resource limits in $detail_file."
+    fi
+
+    # 3. Clean any legacy include from outer_file
+    if [ -f "$outer_file" ]; then
+        remove_ols_include "$domain" "$outer_file"
+    fi
+}
+
+restore_ols_vhost() {
+    local domain="$1"
+    local outer_file="/www/server/panel/vhost/openlitespeed/${domain}.conf"
+    local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+
+    if [ -f "$outer_file" ]; then
+        sed -i -E "s/setUIDMode\s+[0-9]+/setUIDMode 0/" "$outer_file"
+        remove_ols_include "$domain" "$outer_file"
+    fi
+
+    if [ -f "$detail_file" ]; then
+        sed -i -E "s/^\s*extUser\s+.*/  extUser                 www/" "$detail_file"
+        sed -i -E "s/^\s*extGroup\s+.*/  extGroup                www/" "$detail_file"
+        remove_ols_include "$domain" "$detail_file"
+    fi
+}
+
 verify_and_reload_ols() {
     log_info "Verifying OpenLiteSpeed configuration syntax..."
     local test_bin=""
@@ -223,10 +299,12 @@ verify_and_reload_ols() {
     log_info "Reloading OpenLiteSpeed gracefully..."
     touch /tmp/lshttpd/.rtreport 2>/dev/null || true
     if [ -x "/usr/local/lsws/bin/lswsctrl" ]; then
-        /usr/local/lsws/bin/lswsctrl reload >/dev/null 2>&1 || /usr/local/lsws/bin/lswsctrl restart >/dev/null 2>&1 || true
+        /usr/local/lsws/bin/lswsctrl restart >/dev/null 2>&1 || /usr/local/lsws/bin/lswsctrl reload >/dev/null 2>&1 || true
     elif command -v systemctl >/dev/null 2>&1; then
-        systemctl reload lsws 2>/dev/null || systemctl restart lsws 2>/dev/null || true
+        systemctl restart lsws 2>/dev/null || systemctl reload lsws 2>/dev/null || true
     fi
+    # Terminate any old www workers so new workers spawn under the isolated user
+    pkill -u www -f lsphp 2>/dev/null || true
     log_success "OpenLiteSpeed reloaded."
     return 0
 }
