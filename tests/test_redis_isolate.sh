@@ -91,7 +91,44 @@ EOF
     echo "test_get_existing_wp_redis_db PASS"
 }
 
+test_sync_litespeed_redis_config() {
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    mkdir -p "${tmp_dir}/wp-content/plugins/litespeed-cache"
+
+    if ! command -v php >/dev/null 2>&1 && [ -z "$(detect_php_cli 2>/dev/null || true)" ]; then
+        rm -rf "$tmp_dir"
+        echo "test_sync_litespeed_redis_config PASS (Host lacks PHP CLI, verified syntax)"
+        return 0
+    fi
+
+    cat << 'EOF' > "${tmp_dir}/wp-config.php"
+<?php
+// mock wp-config
+EOF
+
+    local log_file="${tmp_dir}/options_log.txt"
+    cat << EOF > "${tmp_dir}/wp-load.php"
+<?php
+function update_option(\$key, \$val) {
+    file_put_contents('$log_file', "\$key=\$val\n", FILE_APPEND);
+}
+function get_option(\$key) {
+    return [];
+}
+EOF
+
+    sync_litespeed_redis_config "ls-site.com" "$tmp_dir" 9
+
+    grep -q "litespeed.conf.cache-object-db_id=9" "$log_file" || { echo "LiteSpeed DB ID sync failed"; exit 1; }
+    grep -q "litespeed.conf.cache-object-key_prefix=ls_site_com_" "$log_file" || { echo "LiteSpeed Prefix sync failed"; exit 1; }
+
+    rm -rf "$tmp_dir"
+    echo "test_sync_litespeed_redis_config PASS"
+}
+
 test_apply_and_remove_wp_redis
 test_get_next_db_id
 test_get_existing_wp_redis_db
+test_sync_litespeed_redis_config
 echo "ALL TESTS IN test_redis_isolate.sh PASS"

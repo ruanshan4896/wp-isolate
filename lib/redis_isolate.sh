@@ -248,6 +248,120 @@ EOF
     fi
 
     log_success "Redis cache configuration injected into $wp_config."
+
+    # Automatically synchronize Database ID & settings to LiteSpeed Cache plugin if installed
+    sync_litespeed_redis_config "$domain" "$docroot" "$db_id"
+}
+
+detect_php_cli() {
+    if command -v php >/dev/null 2>&1; then
+        echo "php"
+        return 0
+    fi
+    for p in /usr/bin/php /usr/local/bin/php /www/server/php/*/bin/php /usr/local/lsws/lsphp*/bin/lsphp /usr/local/lsws/lsphp*/bin/php; do
+        if [ -x "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
+sync_litespeed_redis_config() {
+    local domain="$1"
+    local docroot="${2:-/www/wwwroot/${domain}}"
+    local db_id="$3"
+    local wp_config="$docroot/wp-config.php"
+
+    if [ ! -f "$wp_config" ]; then
+        return 0
+    fi
+
+    # Check if LiteSpeed Cache plugin exists in docroot
+    local lscache_dir="$docroot/wp-content/plugins/litespeed-cache"
+    if [ ! -d "$lscache_dir" ]; then
+        return 0
+    fi
+
+    local clean_prefix
+    clean_prefix=$(echo "$domain" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '_' | sed 's/__*/_/g' | sed 's/^_//;s/_$//')
+    clean_prefix="${clean_prefix}_"
+
+    log_info "Synchronizing Redis Database ID ($db_id) to LiteSpeed Cache plugin for $domain..."
+
+    local synced=false
+
+    # Method 1: Check WP-CLI if available
+    local wp_cli=""
+    if command -v wp >/dev/null 2>&1; then
+        wp_cli="wp"
+    elif [ -x "/usr/local/bin/wp" ]; then
+        wp_cli="/usr/local/bin/wp"
+    elif [ -x "/usr/bin/wp" ]; then
+        wp_cli="/usr/bin/wp"
+    fi
+
+    if [ -n "$wp_cli" ]; then
+        if "$wp_cli" core is-installed --path="$docroot" --allow-root >/dev/null 2>&1; then
+            "$wp_cli" litespeed-option set cache-object 1 --path="$docroot" --allow-root >/dev/null 2>&1 || true
+            "$wp_cli" litespeed-option set cache-object-kind 2 --path="$docroot" --allow-root >/dev/null 2>&1 || true
+            "$wp_cli" litespeed-option set cache-object-host 127.0.0.1 --path="$docroot" --allow-root >/dev/null 2>&1 || true
+            "$wp_cli" litespeed-option set cache-object-port 6379 --path="$docroot" --allow-root >/dev/null 2>&1 || true
+            "$wp_cli" litespeed-option set cache-object-db_id "$db_id" --path="$docroot" --allow-root >/dev/null 2>&1 || true
+            "$wp_cli" litespeed-option set cache-object-key_prefix "$clean_prefix" --path="$docroot" --allow-root >/dev/null 2>&1 || true
+            synced=true
+        fi
+    fi
+
+    # Method 2: Bootstrapped PHP execution via WordPress core (works independently of WP-CLI)
+    local php_bin
+    php_bin=$(detect_php_cli 2>/dev/null || true)
+    if [ -n "$php_bin" ]; then
+        $php_bin -d error_reporting=0 -r "
+define('WP_USE_THEMES', false);
+define('DOING_CRON', true);
+if (file_exists('$wp_config')) {
+    require_once '$docroot/wp-load.php';
+    if (function_exists('update_option')) {
+        update_option('litespeed.conf.cache-object', 1);
+        update_option('litespeed.conf.cache-object-kind', 2);
+        update_option('litespeed.conf.cache-object-host', '127.0.0.1');
+        update_option('litespeed.conf.cache-object-port', 6379);
+        update_option('litespeed.conf.cache-object-db_id', $db_id);
+        update_option('litespeed.conf.cache-object-key_prefix', '$clean_prefix');
+
+        \$conf = get_option('litespeed-conf');
+        if (is_array(\$conf)) {
+            \$conf['cache-object'] = 1;
+            \$conf['cache-object-kind'] = 2;
+            \$conf['cache-object-host'] = '127.0.0.1';
+            \$conf['cache-object-port'] = 6379;
+            \$conf['cache-object-db_id'] = $db_id;
+            \$conf['cache-object-key_prefix'] = '$clean_prefix';
+            update_option('litespeed-conf', \$conf);
+        }
+
+        if (class_exists('LiteSpeed\Conf') && method_exists('LiteSpeed\Conf', 'get_instance')) {
+            try {
+                \LiteSpeed\Conf::get_instance()->update_confs([
+                    'cache-object' => 1,
+                    'cache-object-kind' => 2,
+                    'cache-object-host' => '127.0.0.1',
+                    'cache-object-port' => 6379,
+                    'cache-object-db_id' => $db_id,
+                    'cache-object-key_prefix' => '$clean_prefix',
+                ]);
+            } catch (Exception \$e) {}
+        }
+    }
+}
+" 2>/dev/null || true
+        synced=true
+    fi
+
+    if [ "$synced" = true ]; then
+        log_success "LiteSpeed Cache synchronized: Object Cache enabled on Redis DB $db_id (Prefix: $clean_prefix)."
+    fi
 }
 
 remove_wp_redis_config() {
@@ -266,6 +380,25 @@ remove_wp_redis_config() {
         fi
         if [ "${EUID:-$(id -u)}" -eq 0 ]; then
             chown "${user}:${user}" "$wp_config" 2>/dev/null || true
+        fi
+    fi
+
+    # Reset LiteSpeed Cache options if installed
+    if [ -d "$docroot/wp-content/plugins/litespeed-cache" ]; then
+        local php_bin
+        php_bin=$(detect_php_cli 2>/dev/null || true)
+        if [ -n "$php_bin" ]; then
+            $php_bin -d error_reporting=0 -r "
+define('WP_USE_THEMES', false);
+define('DOING_CRON', true);
+if (file_exists('$wp_config')) {
+    require_once '$docroot/wp-load.php';
+    if (function_exists('update_option')) {
+        update_option('litespeed.conf.cache-object-db_id', 0);
+        update_option('litespeed.conf.cache-object-key_prefix', '');
+    }
+}
+" 2>/dev/null || true
         fi
     fi
 

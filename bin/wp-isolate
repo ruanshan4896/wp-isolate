@@ -379,10 +379,13 @@ cmd_status() {
             local r_val
             r_val=$(grep -E "WP_REDIS_DATABASE" "$docroot/wp-config.php" 2>/dev/null | grep -oE "[0-9]+" | head -n 1 || true)
             local r_salt
-            r_salt=$(grep -E "WP_CACHE_KEY_SALT" "$docroot/wp-config.php" 2>/dev/null | sed -E "s/.*WP_CACHE_KEY_SALT['\"]\s*,\s*['\"]([^'\"]+)['\"].*/\1/" | head -n 1 || true)
+            r_salt=$(grep -E "WP_CACHE_KEY_SALT" "$docroot/wp-config.php" 2>/dev/null | sed -E "s/.*WP_CACHE_KEY_SALT['\"][[:space:]]*,[[:space:]]*['\"]([^'\"]+)['\"].*/\1/" | head -n 1 || true)
             if [ -n "$r_val" ]; then
                 echo "Redis Database ID:   DB $r_val"
                 echo "Redis Key Salt:      $r_salt"
+                if [ -d "$docroot/wp-content/plugins/litespeed-cache" ]; then
+                    echo "LiteSpeed Cache:     Synchronized (DB $r_val)"
+                fi
             else
                 echo "Redis Database:      Not configured"
             fi

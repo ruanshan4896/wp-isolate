@@ -62,6 +62,8 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 │   ├── Auto-Allocation & Re-use: Cấp phát Database ID (1..63) và bảo lưu nguyên vẹn ID  │
 │   │   khi chạy lại / cô lập hàng loạt (tránh mất cache đang hoạt động)                 │
 │   ├── wp-config.php: Tự động tiêm WP_REDIS_DATABASE & WP_CACHE_KEY_SALT                │
+│   ├── LiteSpeed Cache Sync: Tự động đồng bộ Database ID & Key Prefix vào thẳng plugin  │
+│   │   LiteSpeed Cache (LSCWP), bật Object Cache Redis tự động mà không cần chỉnh tay   │
 │   ├── Chống đè cache tuyệt đối (Zero Cache Collision) nhờ tiền tố Salt theo từng domain │
 │   └── Auto Cleanup: Tự động dọn sạch cache cũ (FLUSHDB) nếu đổi Database ID            │
 └────────────────────────────────────────────────────────────────────────────────────────┘
@@ -131,7 +133,7 @@ wp-isolate restore mywebsite.com
 ```bash
 wp-isolate status mywebsite.com
 ```
-Hiển thị đầy đủ thông tin: User Linux, số tiến trình PHP đang chạy thực tế, socket, mức RAM giới hạn, số kết nối MySQL, và Redis Database ID / Key Salt.
+Hiển thị đầy đủ thông tin: User Linux, số tiến trình PHP đang chạy thực tế, socket, mức RAM giới hạn, số kết nối MySQL, Redis Database ID / Key Salt, và trạng thái đồng bộ LiteSpeed Cache.
 
 ### 6. Kiểm tra & Tự động sửa chữa (Audit & Repair)
 Nếu bạn vừa chỉnh sửa cấu hình domain trên giao diện aaPanel và nghi ngờ aaPanel đã ghi đè cấu hình:
