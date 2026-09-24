@@ -34,6 +34,8 @@ EOF
     # 2. Test LiteSpeed Cache block (when litespeed-cache plugin is present)
     mkdir -p "${tmp_dir}/wp-content/plugins/litespeed-cache"
     apply_wp_redis_config "my-site.com" "$tmp_dir" 3
+    grep -q "define( 'LITESPEED_CONF__OBJECT', true )" "${tmp_dir}/wp-config.php" || { echo "LSCache OBJECT enable mismatch"; exit 1; }
+    grep -q "define( 'LITESPEED_CONF__OBJECT__HOST', '127.0.0.1' )" "${tmp_dir}/wp-config.php" || { echo "LSCache HOST mismatch"; exit 1; }
     grep -q "define( 'LITESPEED_CONF__OBJECT__DB_ID', 3 )" "${tmp_dir}/wp-config.php" || { echo "LSCache DB ID mismatch"; exit 1; }
     grep -q "define( 'LITESPEED_CONF__OBJECT__KEY_PREFIX', 'my_site_com_' )" "${tmp_dir}/wp-config.php" || { echo "LSCache prefix mismatch"; exit 1; }
     # Verify no redundant WP_REDIS_DATABASE in LiteSpeed setup

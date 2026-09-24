@@ -282,6 +282,15 @@ apply_wp_redis_config() {
 if ( ! defined( 'LITESPEED_CONF' ) ) {
     define( 'LITESPEED_CONF', true );
 }
+if ( ! defined( 'LITESPEED_CONF__OBJECT' ) ) {
+    define( 'LITESPEED_CONF__OBJECT', true );
+}
+if ( ! defined( 'LITESPEED_CONF__OBJECT__HOST' ) ) {
+    define( 'LITESPEED_CONF__OBJECT__HOST', '127.0.0.1' );
+}
+if ( ! defined( 'LITESPEED_CONF__OBJECT__PORT' ) ) {
+    define( 'LITESPEED_CONF__OBJECT__PORT', 6379 );
+}
 if ( ! defined( 'LITESPEED_CONF__OBJECT__DB_ID' ) ) {
     define( 'LITESPEED_CONF__OBJECT__DB_ID', ${db_id} );
 }
@@ -447,7 +456,14 @@ if (file_exists($root . '/wp-load.php')) {
             update_option('litespeed-conf', $conf);
         }
 
-        // 3. Trigger initial cache write to ensure Redis database is instantly provisioned
+        // 3. Trigger LiteSpeed to update status and ensure object-cache.php drop-in is active
+        if (class_exists('LiteSpeed\Object_Cache') && method_exists('LiteSpeed\Object_Cache', 'get_instance')) {
+            try {
+                \LiteSpeed\Object_Cache::get_instance()->update_status(true);
+            } catch (Exception $e) {}
+        }
+
+        // 4. Trigger initial cache write to ensure Redis database is instantly provisioned
         if (function_exists('wp_cache_set')) {
             wp_cache_set('wp_isolate_init', time(), '', 300);
         }
@@ -458,6 +474,15 @@ EOF
             rm -f "$sync_script"
             synced=true
         fi
+    fi
+
+    # Ensure correct permissions on object-cache.php if created
+    local oc_dropin="$docroot/wp-content/object-cache.php"
+    if [ -f "$oc_dropin" ]; then
+        if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+            chown "${site_user}:${site_user}" "$oc_dropin" 2>/dev/null || true
+        fi
+        chmod 644 "$oc_dropin" 2>/dev/null || true
     fi
 
     # Terminate active worker processes for this user to release persistent Redis sockets
