@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+# bin/wp-isolate - aaPanel OpenLiteSpeed Website Isolation Utility
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Source libraries
+source "${SCRIPT_DIR}/lib/common.sh"
+source "${SCRIPT_DIR}/lib/os_user.sh"
+source "${SCRIPT_DIR}/lib/ols_vhost.sh"
+source "${SCRIPT_DIR}/lib/mysql_limit.sh"
+
+# Paths
+BASE_DIR="${WP_ISOLATE_DIR:-/opt/wp-isolate}"
+VHOSTS_DIR="${BASE_DIR}/vhosts"
+BACKUPS_DIR="${BASE_DIR}/backups"
+DATA_DIR="${BASE_DIR}/data"
+SITES_REGISTRY="${DATA_DIR}/sites.json"
+
+init_storage() {
+    mkdir -p "$VHOSTS_DIR" "$BACKUPS_DIR" "$DATA_DIR"
+    if [ ! -f "$SITES_REGISTRY" ]; then
+        echo "{}" > "$SITES_REGISTRY"
+    fi
+}
+
+cmd_help() {
+    cat << 'EOF'
+Usage: wp-isolate <command> [arguments] [options]
+
+Core Commands:
+  list                          List all websites and their isolation status
+  isolate <domain> [options]    Isolate a website with dedicated suEXEC user and limits
+  isolate-all [options]         Isolate all unisolated websites on the server
+  restore <domain>              Revert website back to default aaPanel (www:www)
+  status <domain>               Display detailed isolation status and metrics
+  verify                        Audit system integrity and check for configuration drift
+  repair [domain]               Re-apply isolated configuration hooks
+
+Options for 'isolate':
+  --max-conns <num>             Max concurrent PHP workers (Default: 15)
+  --mem-limit <size>            Max memory limit e.g. 512M (Default: 512M)
+  --db-limit <num>              Max MySQL connections for site DB user (Default: 25)
+  --req-limit <num>             Max dynamic requests/sec per client IP (Default: 10)
+  --docroot <path>              Override website document root path
+
+Examples:
+  wp-isolate list
+  wp-isolate isolate example.com --max-conns 20 --mem-limit 512M
+  wp-isolate restore example.com
+  wp-isolate status example.com
+EOF
+}
+
+cmd_list() {
+    init_storage
+    printf "%-30s | %-12s | %-20s | %-10s | %-10s\n" "DOMAIN" "STATUS" "LINUX USER" "PHP VER" "MAX CONNS"
+    echo "--------------------------------------------------------------------------------------------------"
+
+    local domains=()
+
+    # Discover domains from aaPanel OLS directory
+    if [ -d "/www/server/panel/vhost/openlitespeed" ]; then
+        for f in /www/server/panel/vhost/openlitespeed/*.conf; do
+            [ -e "$f" ] || continue
+            local d
+            d=$(basename "$f" .conf)
+            domains+=("$d")
+        done
+    fi
+
+    # Fallback to scanning /www/wwwroot/
+    if [ ${#domains[@]} -eq 0 ] && [ -d "/www/wwwroot" ]; then
+        for d in /www/wwwroot/*; do
+            [ -d "$d" ] || continue
+            local name
+            name=$(basename "$d")
+            [[ "$name" =~ ^(default|phpmyadmin)$ ]] && continue
+            domains+=("$name")
+        done
+    fi
+
+    if [ ${#domains[@]} -eq 0 ]; then
+        log_info "No websites found on aaPanel."
+        return 0
+    fi
+
+    for domain in "${domains[@]}"; do
+        local vhost_file
+        vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
+        local status="DEFAULT"
+        local user="www"
+        local php_ver="-"
+        local max_conns="-"
+
+        if [ -n "$vhost_file" ] && grep -q "WP-ISOLATE: ${domain}" "$vhost_file" 2>/dev/null; then
+            status="ISOLATED"
+            user=$(get_site_user "$domain")
+            php_ver=$(detect_php_version "$domain")
+            local isolate_conf="${VHOSTS_DIR}/${domain}/ols_isolate.conf"
+            if [ -f "$isolate_conf" ]; then
+                max_conns=$(grep "maxConns" "$isolate_conf" | awk '{print $2}' || echo "-")
+            fi
+        fi
+
+        printf "%-30s | %-12s | %-20s | %-10s | %-10s\n" "$domain" "$status" "$user" "$php_ver" "$max_conns"
+    done
+}
+
+cmd_isolate() {
+    local domain=""
+    local max_conns=15
+    local mem_limit="512M"
+    local db_limit=25
+    local req_limit=10
+    local custom_docroot=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --max-conns) max_conns="$2"; shift 2 ;;
+            --mem-limit) mem_limit="$2"; shift 2 ;;
+            --db-limit) db_limit="$2"; shift 2 ;;
+            --req-limit) req_limit="$2"; shift 2 ;;
+            --docroot) custom_docroot="$2"; shift 2 ;;
+            -*) log_error "Unknown option: $1"; exit 1 ;;
+            *)
+                if [ -z "$domain" ]; then
+                    domain="$1"
+                    shift
+                else
+                    log_error "Unexpected argument: $1"; exit 1
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$domain" ]; then
+        log_error "Domain name is required. Example: wp-isolate isolate example.com"
+        exit 1
+    fi
+
+    init_storage
+
+    local docroot="${custom_docroot:-/www/wwwroot/${domain}}"
+    if [ ! -d "$docroot" ]; then
+        log_error "Website root directory $docroot not found."
+        exit 1
+    fi
+
+    local vhost_file
+    vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
+    if [ -z "$vhost_file" ] || [ ! -f "$vhost_file" ]; then
+        log_error "Could not find OpenLiteSpeed vhost file for $domain in aaPanel."
+        exit 1
+    fi
+
+    log_info "Starting isolation for website: $domain"
+
+    # Step 1: Pre-flight Backup
+    local timestamp
+    timestamp=$(date +%Y%m%d%H%M%S)
+    local backup_dir="${BACKUPS_DIR}/${domain}/${timestamp}"
+    mkdir -p "$backup_dir"
+    cp "$vhost_file" "${backup_dir}/vhost.conf"
+    log_info "Saved pre-flight backup to ${backup_dir}/vhost.conf"
+
+    # Step 2: Create Linux System User
+    create_isolated_user "$domain" "$docroot"
+
+    # Step 3: Apply Permissions & POSIX ACL
+    apply_site_permissions "$domain" "$docroot"
+
+    # Step 4: Render Isolated OLS Configuration
+    local php_ver
+    php_ver=$(detect_php_version "$domain")
+    local isolate_conf="${VHOSTS_DIR}/${domain}/ols_isolate.conf"
+    render_ols_isolate_template "$domain" "$php_ver" "$max_conns" "$mem_limit" "$req_limit" "$isolate_conf" "$docroot"
+
+    # Step 5: Inject Include into VHost
+    inject_ols_include "$domain" "$vhost_file" "$isolate_conf"
+
+    # Step 6: Limit MySQL Database Connections
+    local db_user
+    db_user=$(extract_wp_db_user "$docroot" 2>/dev/null || true)
+    if [ -n "$db_user" ]; then
+        set_mysql_user_limit "$db_user" "$db_limit"
+    fi
+
+    # Step 7: Syntax Verification & Graceful Reload (Fail-Safe Rollback Engine)
+    if ! verify_and_reload_ols; then
+        log_error "OpenLiteSpeed validation failed! Initiating IMMEDIATE AUTO-ROLLBACK..."
+        cp "${backup_dir}/vhost.conf" "$vhost_file"
+        restore_site_permissions "$domain" "$docroot"
+        remove_isolated_user "$domain"
+        rm -rf "${VHOSTS_DIR:?}/${domain}"
+        verify_and_reload_ols || true
+        log_error "Rollback complete. System returned to pre-isolation state."
+        exit 1
+    fi
+
+    log_success "Website $domain successfully ISOLATED!"
+}
+
+cmd_restore() {
+    local domain="${1:-}"
+    if [ -z "$domain" ]; then
+        log_error "Domain name is required. Example: wp-isolate restore example.com"
+        exit 1
+    fi
+
+    init_storage
+    local docroot="/www/wwwroot/${domain}"
+    local vhost_file
+    vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
+
+    log_info "Restoring website $domain to standard aaPanel configuration..."
+
+    if [ -n "$vhost_file" ]; then
+        remove_ols_include "$domain" "$vhost_file"
+    fi
+
+    restore_site_permissions "$domain" "$docroot"
+
+    local db_user
+    db_user=$(extract_wp_db_user "$docroot" 2>/dev/null || true)
+    if [ -n "$db_user" ]; then
+        remove_mysql_user_limit "$db_user"
+    fi
+
+    remove_isolated_user "$domain"
+    rm -rf "${VHOSTS_DIR:?}/${domain}"
+
+    verify_and_reload_ols
+    log_success "Website $domain restored to standard aaPanel state."
+}
+
+cmd_status() {
+    local domain="${1:-}"
+    if [ -z "$domain" ]; then
+        log_error "Domain name is required. Example: wp-isolate status example.com"
+        exit 1
+    fi
+
+    local user
+    user=$(get_site_user "$domain")
+    local docroot="/www/wwwroot/${domain}"
+    local vhost_file
+    vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
+
+    echo "=========================================================="
+    echo "  ISOLATION STATUS FOR: ${domain}"
+    echo "=========================================================="
+    if [ -n "$vhost_file" ] && grep -q "WP-ISOLATE: ${domain}" "$vhost_file" 2>/dev/null; then
+        echo "Status:              ISOLATED"
+        echo "Linux User:          $user"
+        echo "Document Root:       $docroot"
+        echo "VHost Config:        $vhost_file"
+        local isolate_conf="${VHOSTS_DIR}/${domain}/ols_isolate.conf"
+        if [ -f "$isolate_conf" ]; then
+            echo "Isolated Config:     $isolate_conf"
+            echo "Max PHP Conns:       $(grep 'maxConns' "$isolate_conf" | awk '{print $2}')"
+            echo "Mem Soft/Hard:       $(grep 'memSoftLimit' "$isolate_conf" | awk '{print $2}') / $(grep 'memHardLimit' "$isolate_conf" | awk '{print $2}')"
+            echo "Per-Client Limit:    $(grep 'perClientConnLimit' "$isolate_conf" | awk '{print $2}')"
+            echo "Dyn Req/Sec:         $(grep 'dynReqPerSec' "$isolate_conf" | awk '{print $2}')"
+        fi
+        local active_workers
+        active_workers=$(pgrep -u "$user" 2>/dev/null | wc -l || echo "0")
+        echo "Active PHP Workers:  $active_workers"
+    else
+        echo "Status:              DEFAULT (Shared user www:www)"
+        echo "Document Root:       $docroot"
+        echo "VHost Config:        ${vhost_file:-Not Found}"
+    fi
+    echo "=========================================================="
+}
+
+cmd_verify() {
+    log_info "Auditing isolation configuration across all websites..."
+    local issues=0
+    if [ -d "$VHOSTS_DIR" ]; then
+        for d in "$VHOSTS_DIR"/*; do
+            [ -d "$d" ] || continue
+            local domain
+            domain=$(basename "$d")
+            local vhost_file
+            vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
+            if [ -z "$vhost_file" ] || ! grep -q "WP-ISOLATE: ${domain}" "$vhost_file" 2>/dev/null; then
+                log_warn "Configuration drift detected: $domain isolation include is missing in $vhost_file!"
+                issues=$((issues + 1))
+            fi
+        done
+    fi
+
+    if [ "$issues" -eq 0 ]; then
+        log_success "Audit completed. All isolated sites have intact configurations."
+    else
+        log_warn "Found $issues issue(s). Run 'wp-isolate repair [domain]' to fix."
+    fi
+}
+
+cmd_repair() {
+    local target_domain="${1:-}"
+    if [ -n "$target_domain" ]; then
+        local isolate_conf="${VHOSTS_DIR}/${target_domain}/ols_isolate.conf"
+        local vhost_file
+        vhost_file=$(detect_ols_vhost_file "$target_domain" 2>/dev/null || true)
+        if [ -f "$isolate_conf" ] && [ -n "$vhost_file" ]; then
+            inject_ols_include "$target_domain" "$vhost_file" "$isolate_conf"
+            apply_site_permissions "$target_domain" "/www/wwwroot/${target_domain}"
+            verify_and_reload_ols
+            log_success "Repaired $target_domain."
+        fi
+    else
+        log_info "Repairing all isolated websites..."
+        for d in "$VHOSTS_DIR"/*; do
+            [ -d "$d" ] || continue
+            local domain
+            domain=$(basename "$d")
+            local isolate_conf="${VHOSTS_DIR}/${domain}/ols_isolate.conf"
+            local vhost_file
+            vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
+            if [ -f "$isolate_conf" ] && [ -n "$vhost_file" ]; then
+                inject_ols_include "$domain" "$vhost_file" "$isolate_conf"
+                apply_site_permissions "$domain" "/www/wwwroot/${domain}"
+            fi
+        done
+        verify_and_reload_ols
+        log_success "All isolated websites repaired."
+    fi
+}
+
+cmd_isolate_all() {
+    log_info "Scanning for all unisolated websites on aaPanel..."
+    local count=0
+    if [ -d "/www/server/panel/vhost/openlitespeed" ]; then
+        for f in /www/server/panel/vhost/openlitespeed/*.conf; do
+            [ -e "$f" ] || continue
+            local domain
+            domain=$(basename "$f" .conf)
+            if ! grep -q "WP-ISOLATE: ${domain}" "$f" 2>/dev/null; then
+                log_info "Isolating $domain..."
+                cmd_isolate "$domain" "$@" || true
+                count=$((count + 1))
+            fi
+        done
+    fi
+    log_success "Isolated $count website(s)."
+}
+
+# Main command dispatcher
+ACTION="${1:-help}"
+shift || true
+
+case "$ACTION" in
+    list)        cmd_list "$@" ;;
+    isolate)     cmd_isolate "$@" ;;
+    isolate-all) cmd_isolate_all "$@" ;;
+    restore)     cmd_restore "$@" ;;
+    status)      cmd_status "$@" ;;
+    verify)      cmd_verify "$@" ;;
+    repair)      cmd_repair "$@" ;;
+    help|--help|-h) cmd_help ;;
+    *)
+        log_error "Unknown command: $ACTION"
+        cmd_help
+        exit 1
+        ;;
+esac
