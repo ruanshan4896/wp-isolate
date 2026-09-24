@@ -151,6 +151,13 @@ EOF
     grep -q "litespeed.conf.cache-object-db_id=9" "$log_file" || { echo "LiteSpeed DB ID sync failed"; exit 1; }
     grep -q "litespeed.conf.cache-object-key_prefix=ls_site_com_" "$log_file" || { echo "LiteSpeed Prefix sync failed"; exit 1; }
 
+    # Verify object-cache.php and .litespeed_conf.dat drop-ins exist
+    [ -f "${tmp_dir}/wp-content/object-cache.php" ] || { echo "object-cache.php not created"; exit 1; }
+    grep -q "LSCWP_OBJECT_CACHE" "${tmp_dir}/wp-content/object-cache.php" || { echo "object-cache.php content invalid"; exit 1; }
+    [ -f "${tmp_dir}/wp-content/.litespeed_conf.dat" ] || { echo ".litespeed_conf.dat not created"; exit 1; }
+    grep -q '"object-db_id":9' "${tmp_dir}/wp-content/.litespeed_conf.dat" || { echo ".litespeed_conf.dat missing db_id"; exit 1; }
+    grep -q '"object-key_prefix":"ls_site_com_"' "${tmp_dir}/wp-content/.litespeed_conf.dat" || { echo ".litespeed_conf.dat missing prefix"; exit 1; }
+
     rm -rf "$tmp_dir"
     echo "test_sync_litespeed_redis_config PASS"
 }

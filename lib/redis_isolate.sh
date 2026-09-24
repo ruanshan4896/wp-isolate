@@ -379,21 +379,57 @@ sync_litespeed_redis_config() {
     local site_user
     site_user=$(get_site_user "$domain")
 
-    # Step 1: Ensure LiteSpeed object-cache.php drop-in is copied to wp-content/object-cache.php
+    # Step 1: Ensure LiteSpeed object-cache.php drop-in is active in wp-content/
     local oc_dropin="$docroot/wp-content/object-cache.php"
+    local installed_dropin=false
     for cand in "$lscache_dir/lib/object-cache.php" "$lscache_dir/src/object-cache.php"; do
         if [ -f "$cand" ]; then
-            if [ ! -f "$oc_dropin" ] || ! grep -qi "litespeed" "$oc_dropin" 2>/dev/null; then
-                cp "$cand" "$oc_dropin" 2>/dev/null || true
-                if [ "${EUID:-$(id -u)}" -eq 0 ]; then
-                    chown "${site_user}:${site_user}" "$oc_dropin" 2>/dev/null || true
-                fi
-                chmod 644 "$oc_dropin" 2>/dev/null || true
-                log_info "Installed LiteSpeed object-cache.php drop-in for $domain."
-            fi
+            cp "$cand" "$oc_dropin" 2>/dev/null || true
+            installed_dropin=true
             break
         fi
     done
+    if [ "$installed_dropin" = false ] && [ ! -f "$oc_dropin" ]; then
+        cat << 'EOF' > "$oc_dropin"
+<?php
+// LiteSpeed Cache - Object Cache (Drop-in)
+defined( 'WPINC' ) || exit;
+! defined( 'LSCWP_OBJECT_CACHE' ) && define( 'LSCWP_OBJECT_CACHE', true );
+$lscwp_dir = ( defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR : WP_CONTENT_DIR . '/plugins' ) . '/litespeed-cache/';
+if ( ! file_exists( $lscwp_dir . 'litespeed-cache.php' ) ) {
+    $lscwp_dir = ( defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins' ) . '/litespeed-cache/';
+    if ( ! file_exists( $lscwp_dir . 'litespeed-cache.php' ) ) {
+        $lscwp_dir = '';
+    }
+}
+$data_file = WP_CONTENT_DIR . '/.litespeed_conf.dat';
+$lib_file  = $lscwp_dir . 'src/object.lib.php';
+if ( ! $lscwp_dir || ! file_exists( $data_file ) || ( ! file_exists( $lib_file ) ) ) {
+    if ( ! is_admin() ) {
+        require_once ABSPATH . WPINC . '/cache.php';
+    } else {
+        $err = 'Can NOT find LSCWP path for object cache initialization in ' . __FILE__;
+        error_log( $err );
+        add_action( is_network_admin() ? 'network_admin_notices' : 'admin_notices', function () use ( &$err ) { echo $err; } );
+    }
+} elseif ( ! LSCWP_OBJECT_CACHE ) {
+    wp_using_ext_object_cache( false );
+} elseif ( file_exists( $lib_file ) ) {
+    require_once $lib_file;
+}
+EOF
+    fi
+
+    # Step 1b: Ensure LiteSpeed .litespeed_conf.dat configuration file exists with allocated DB ID
+    local conf_dat="$docroot/wp-content/.litespeed_conf.dat"
+    cat << EOF > "$conf_dat"
+{"debug":false,"object":1,"object-kind":1,"object-host":"127.0.0.1","object-port":6379,"object-life":360,"object-user":"","object-pswd":"","object-db_id":${db_id},"object-persistent":1,"object-admin":1,"object-key_prefix":"${clean_prefix}","object-global_groups":["users","userlogins","usermeta","user_meta","site-transient","site-options","site-lookup","blog-lookup","blog-details","rss","global-posts","blog-id-cache"],"object-non_persistent_groups":["comment","counts","plugins"]}
+EOF
+
+    if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+        chown "${site_user}:${site_user}" "$oc_dropin" "$conf_dat" 2>/dev/null || true
+    fi
+    chmod 644 "$oc_dropin" "$conf_dat" 2>/dev/null || true
 
     local synced=false
 
@@ -410,7 +446,7 @@ sync_litespeed_redis_config() {
     if [ -n "$wp_cli" ]; then
         if "$wp_cli" core is-installed --path="$docroot" --allow-root >/dev/null 2>&1; then
             "$wp_cli" litespeed-option set cache-object 1 --path="$docroot" --allow-root >/dev/null 2>&1 || true
-            "$wp_cli" litespeed-option set cache-object-kind 2 --path="$docroot" --allow-root >/dev/null 2>&1 || true
+            "$wp_cli" litespeed-option set cache-object-kind 1 --path="$docroot" --allow-root >/dev/null 2>&1 || true
             "$wp_cli" litespeed-option set cache-object-host 127.0.0.1 --path="$docroot" --allow-root >/dev/null 2>&1 || true
             "$wp_cli" litespeed-option set cache-object-port 6379 --path="$docroot" --allow-root >/dev/null 2>&1 || true
             "$wp_cli" litespeed-option set cache-object-db_id "$db_id" --path="$docroot" --allow-root >/dev/null 2>&1 || true
@@ -428,17 +464,16 @@ sync_litespeed_redis_config() {
             cat << 'EOF' > "$sync_script"
 <?php
 define('WP_USE_THEMES', false);
-define('DOING_CRON', true);
 $root = dirname(__FILE__);
 if (file_exists($root . '/wp-load.php')) {
     require_once $root . '/wp-load.php';
-    if (function_exists('update_option')) {
-        $db_id = intval($argv[1] ?? 0);
-        $prefix = strval($argv[2] ?? '');
+    $db_id = intval($argv[1] ?? 0);
+    $prefix = strval($argv[2] ?? '');
 
+    if (function_exists('update_option')) {
         // 1. LiteSpeed Cache modern individual options
         update_option('litespeed.conf.cache-object', 1);
-        update_option('litespeed.conf.cache-object-kind', 2);
+        update_option('litespeed.conf.cache-object-kind', 1);
         update_option('litespeed.conf.cache-object-host', '127.0.0.1');
         update_option('litespeed.conf.cache-object-port', 6379);
         update_option('litespeed.conf.cache-object-db_id', $db_id);
@@ -448,7 +483,7 @@ if (file_exists($root . '/wp-load.php')) {
         $conf = get_option('litespeed-conf');
         if (is_array($conf)) {
             $conf['cache-object'] = 1;
-            $conf['cache-object-kind'] = 2;
+            $conf['cache-object-kind'] = 1;
             $conf['cache-object-host'] = '127.0.0.1';
             $conf['cache-object-port'] = 6379;
             $conf['cache-object-db_id'] = $db_id;
@@ -456,17 +491,41 @@ if (file_exists($root . '/wp-load.php')) {
             update_option('litespeed-conf', $conf);
         }
 
-        // 3. Trigger LiteSpeed to update status and ensure object-cache.php drop-in is active
-        if (class_exists('LiteSpeed\Object_Cache') && method_exists('LiteSpeed\Object_Cache', 'get_instance')) {
+        // 3. Trigger LiteSpeed Conf and Activation if available
+        if (class_exists('\\LiteSpeed\\Conf') && method_exists('\\LiteSpeed\\Conf', 'cls')) {
             try {
-                \LiteSpeed\Object_Cache::get_instance()->update_status(true);
-            } catch (Exception $e) {}
+                \LiteSpeed\Conf::cls()->update_confs([
+                    'object' => 1,
+                    'object-kind' => 1,
+                    'object-host' => '127.0.0.1',
+                    'object-port' => 6379,
+                    'object-db_id' => $db_id,
+                    'object-key_prefix' => $prefix,
+                ]);
+            } catch (\Throwable $e) {}
+        }
+        if (class_exists('\\LiteSpeed\\Activation') && method_exists('\\LiteSpeed\\Activation', 'cls')) {
+            try {
+                \LiteSpeed\Activation::cls()->update_files();
+            } catch (\Throwable $e) {}
         }
 
-        // 4. Trigger initial cache write to ensure Redis database is instantly provisioned
+        // 4. Test and populate Redis key through WordPress cache API
         if (function_exists('wp_cache_set')) {
-            wp_cache_set('wp_isolate_init', time(), '', 300);
+            wp_cache_set('wp_isolate_init', time(), '', 86400);
         }
+    }
+
+    // 5. Direct Redis extension test & initialization
+    if (extension_loaded('redis')) {
+        try {
+            $r = new \Redis();
+            if ($r->connect('127.0.0.1', 6379, 2)) {
+                $r->select($db_id);
+                $r->set($prefix . 'wp_isolate_init', time(), 86400);
+                $r->close();
+            }
+        } catch (\Throwable $e) {}
     }
 }
 EOF
@@ -476,13 +535,9 @@ EOF
         fi
     fi
 
-    # Ensure correct permissions on object-cache.php if created
-    local oc_dropin="$docroot/wp-content/object-cache.php"
-    if [ -f "$oc_dropin" ]; then
-        if [ "${EUID:-$(id -u)}" -eq 0 ]; then
-            chown "${site_user}:${site_user}" "$oc_dropin" 2>/dev/null || true
-        fi
-        chmod 644 "$oc_dropin" 2>/dev/null || true
+    # Step 4: Direct CLI write to guarantee Redis database appears in keyspace
+    if command -v redis-cli >/dev/null 2>&1; then
+        redis-cli -n "$db_id" SET "${clean_prefix}wp_isolate_init" "$(date +%s)" EX 86400 >/dev/null 2>&1 || true
     fi
 
     # Terminate active worker processes for this user to release persistent Redis sockets

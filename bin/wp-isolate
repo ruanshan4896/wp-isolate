@@ -299,10 +299,11 @@ cmd_isolate() {
         return 1
     fi
 
-    # Warm up site with an HTTP request so WordPress and LiteSpeed Cache immediately connect and populate Redis
-    if [ "$enable_redis" = true ]; then
-        curl -s -k -L -m 5 -H "Host: ${domain}" "http://127.0.0.1/" >/dev/null 2>&1 || true
-        curl -s -k -L -m 5 -H "Host: ${domain}" "https://127.0.0.1/" >/dev/null 2>&1 || true
+    # Warm up site with an HTTP/HTTPS request so WordPress and LiteSpeed Cache immediately connect and populate Redis
+    if [ "$enable_redis" = true ] && command -v curl >/dev/null 2>&1; then
+        curl -s -k -m 5 --resolve "${domain}:80:127.0.0.1" --resolve "${domain}:443:127.0.0.1" "https://${domain}/" >/dev/null 2>&1 || \
+        curl -s -k -m 5 --resolve "${domain}:80:127.0.0.1" --resolve "${domain}:443:127.0.0.1" "http://${domain}/" >/dev/null 2>&1 || \
+        curl -s -k -m 5 -H "Host: ${domain}" "http://127.0.0.1/" >/dev/null 2>&1 || true
     fi
 
     update_site_registry "$domain" "$user" "${redis_db:-}"
