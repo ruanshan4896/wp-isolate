@@ -87,7 +87,7 @@ Usage: wp-isolate <command> [arguments] [options]
 Core Commands:
   list                          List all websites and their isolation status
   isolate <domain> [options]    Isolate a website with dedicated suEXEC user and limits
-  isolate-all [options]         Isolate all unisolated websites on the server
+  isolate-all [options]         Isolate all websites (use --force to re-apply to all)
   restore <domain>              Revert website back to default aaPanel (www:www)
   status <domain>               Display detailed isolation status and metrics
   verify                        Audit system integrity and check for configuration drift
@@ -447,32 +447,86 @@ cmd_repair() {
 }
 
 cmd_isolate_all() {
-    log_info "Scanning for all unisolated websites on aaPanel..."
+    local force=false
+    local args=()
+    for arg in "$@"; do
+        if [ "$arg" = "--force" ] || [ "$arg" = "-f" ]; then
+            force=true
+        else
+            args+=("$arg")
+        fi
+    done
+
+    log_info "Scanning for websites on aaPanel..."
     local count=0
+    local domains=()
     local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+    local wwwroot_dir="${AAPANEL_WWWROOT_DIR:-/www/wwwroot}"
+
+    # Discover domains from aaPanel OLS directory
     if [ -d "$vhost_panel_dir" ]; then
         for f in "$vhost_panel_dir"/*.conf; do
             [ -e "$f" ] || continue
-            local domain
-            domain=$(basename "$f" .conf)
-            [[ "$domain" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
-            local detail_file="${vhost_panel_dir}/detail/${domain}.conf"
-            local is_already_isolated=false
-            if [ -f "$detail_file" ] && grep -qE "^\s*extUser\s+iso_" "$detail_file" 2>/dev/null && grep -q "setUIDMode 2" "$f" 2>/dev/null; then
-                is_already_isolated=true
-            fi
-
-            if [ "$is_already_isolated" = false ]; then
-                log_info "Isolating $domain..."
-                if cmd_isolate "$domain" "$@"; then
-                    count=$((count + 1))
-                else
-                    log_warn "Failed to isolate $domain. Continuing to next website..."
-                fi
-            fi
+            local d
+            d=$(basename "$f" .conf)
+            [[ "$d" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
+            domains+=("$d")
         done
     fi
-    log_success "Isolated $count website(s)."
+
+    # Fallback to scanning wwwroot
+    if [ ${#domains[@]} -eq 0 ] && [ -d "$wwwroot_dir" ]; then
+        for d in "$wwwroot_dir"/*; do
+            [ -d "$d" ] || continue
+            local name
+            name=$(basename "$d")
+            [[ "$name" =~ ^(default|phpmyadmin)$ ]] && continue
+            domains+=("$name")
+        done
+    fi
+
+    if [ ${#domains[@]} -eq 0 ]; then
+        log_info "No websites found on aaPanel."
+        return 0
+    fi
+
+    for domain in "${domains[@]}"; do
+        local f="${vhost_panel_dir}/${domain}.conf"
+        local detail_file="${vhost_panel_dir}/detail/${domain}.conf"
+        local is_already_isolated=false
+
+        if [ -f "$detail_file" ] && grep -qE "^\s*extUser\s+iso_" "$detail_file" 2>/dev/null && grep -q "setUIDMode 2" "$f" 2>/dev/null; then
+            is_already_isolated=true
+        fi
+
+        local docroot
+        docroot=$(detect_vhost_docroot "$domain" "$f" 2>/dev/null || echo "${wwwroot_dir}/${domain}")
+
+        local needs_redis_update=false
+        if [ -f "$docroot/wp-config.php" ] && ! grep -q "WP_REDIS_DATABASE" "$docroot/wp-config.php" 2>/dev/null; then
+            needs_redis_update=true
+        fi
+
+        if [ "$is_already_isolated" = true ] && [ "$force" = false ]; then
+            if [ "$needs_redis_update" = true ]; then
+                log_info "Website $domain is isolated but missing Redis cache configuration. Updating..."
+                if cmd_isolate "$domain" "${args[@]}"; then
+                    count=$((count + 1))
+                fi
+            else
+                log_info "Website $domain is already fully isolated. (Use --force to re-apply)"
+            fi
+            continue
+        fi
+
+        log_info "Isolating $domain..."
+        if cmd_isolate "$domain" "${args[@]}"; then
+            count=$((count + 1))
+        else
+            log_warn "Failed to isolate $domain. Continuing to next website..."
+        fi
+    done
+    log_success "Processed $count website(s)."
 }
 
 # Main command dispatcher
