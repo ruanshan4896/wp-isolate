@@ -172,7 +172,7 @@ cmd_list() {
 
         if [ -f "$docroot/wp-config.php" ]; then
             local r_val
-            r_val=$(grep -E "WP_REDIS_DATABASE" "$docroot/wp-config.php" 2>/dev/null | grep -oE "[0-9]+" | head -n 1 || true)
+            r_val=$(extract_wp_redis_db "$docroot/wp-config.php" 2>/dev/null || true)
             if [ -n "$r_val" ]; then
                 redis_db="DB ${r_val}"
             fi
@@ -330,7 +330,7 @@ cmd_restore() {
     # Remove Redis cache configuration and flush isolated DB
     local redis_db=""
     if [ -f "$docroot/wp-config.php" ]; then
-        redis_db=$(grep -E "WP_REDIS_DATABASE" "$docroot/wp-config.php" 2>/dev/null | grep -oE "[0-9]+" | head -n 1 || true)
+        redis_db=$(extract_wp_redis_db "$docroot/wp-config.php" 2>/dev/null || true)
     fi
     remove_wp_redis_config "$domain" "$docroot" "$redis_db"
     remove_from_registry "$domain"
@@ -351,9 +351,10 @@ cmd_status() {
 
     local user
     user=$(get_site_user "$domain")
-    local docroot="/www/wwwroot/${domain}"
     local vhost_file
     vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
+    local docroot
+    docroot=$(detect_vhost_docroot "$domain" "$vhost_file" 2>/dev/null || echo "${AAPANEL_WWWROOT_DIR:-/www/wwwroot}/${domain}")
 
     echo "=========================================================="
     echo "  ISOLATION STATUS FOR: ${domain}"
@@ -375,25 +376,26 @@ cmd_status() {
         active_workers=$(pgrep -u "$user" 2>/dev/null | wc -l || echo "0")
         echo "Active PHP Workers:  $active_workers"
 
-        if [ -f "$docroot/wp-config.php" ]; then
-            local r_val
-            r_val=$(grep -E "WP_REDIS_DATABASE" "$docroot/wp-config.php" 2>/dev/null | grep -oE "[0-9]+" | head -n 1 || true)
-            local r_salt
-            r_salt=$(grep -E "WP_CACHE_KEY_SALT" "$docroot/wp-config.php" 2>/dev/null | sed -E "s/.*WP_CACHE_KEY_SALT['\"][[:space:]]*,[[:space:]]*['\"]([^'\"]+)['\"].*/\1/" | head -n 1 || true)
-            if [ -n "$r_val" ]; then
-                echo "Redis Database ID:   DB $r_val"
-                echo "Redis Key Salt:      $r_salt"
-                if [ -d "$docroot/wp-content/plugins/litespeed-cache" ]; then
-                    echo "LiteSpeed Cache:     Synchronized (DB $r_val)"
-                fi
-            else
-                echo "Redis Database:      Not configured"
-            fi
-        fi
     else
         echo "Status:              DEFAULT (Shared user www:www)"
         echo "Document Root:       $docroot"
         echo "VHost Config:        ${vhost_file:-Not Found}"
+    fi
+
+    if [ -f "$docroot/wp-config.php" ]; then
+        local r_val
+        r_val=$(extract_wp_redis_db "$docroot/wp-config.php" 2>/dev/null || true)
+        local r_salt
+        r_salt=$(extract_wp_redis_salt "$docroot/wp-config.php" 2>/dev/null || true)
+        if [ -n "$r_val" ]; then
+            echo "Redis Database ID:   DB $r_val"
+            [ -n "$r_salt" ] && echo "Redis Key Salt:      $r_salt"
+            if [ -d "$docroot/wp-content/plugins/litespeed-cache" ]; then
+                echo "LiteSpeed Cache:     Synchronized (DB $r_val)"
+            fi
+        else
+            echo "Redis Database:      Not configured"
+        fi
     fi
     echo "=========================================================="
 }
@@ -510,8 +512,10 @@ cmd_isolate_all() {
         docroot=$(detect_vhost_docroot "$domain" "$f" 2>/dev/null || echo "${wwwroot_dir}/${domain}")
 
         local needs_redis_update=false
-        if [ -f "$docroot/wp-config.php" ] && ! grep -q "WP_REDIS_DATABASE" "$docroot/wp-config.php" 2>/dev/null; then
-            needs_redis_update=true
+        if [ -f "$docroot/wp-config.php" ]; then
+            if ! extract_wp_redis_db "$docroot/wp-config.php" >/dev/null 2>&1; then
+                needs_redis_update=true
+            fi
         fi
 
         if [ "$is_already_isolated" = true ] && [ "$force" = false ]; then

@@ -42,6 +42,15 @@ EOF
     list_out=$(AAPANEL_OLS_VHOST_DIR="${tmp_base}/www/server/panel/vhost/openlitespeed" AAPANEL_WWWROOT_DIR="${tmp_base}/www/wwwroot" WP_ISOLATE_DIR="${tmp_base}/opt/wp-isolate" bash "${SCRIPT_DIR}/bin/wp-isolate" list)
     echo "$list_out" | grep -q "DB 2" || { echo "Expected DB 2 in list output"; exit 1; }
 
+    # Test with LiteSpeed Cache plugin directory (pure LSCache constants)
+    mkdir -p "${tmp_base}/www/wwwroot/mytest.com/wp-content/plugins/litespeed-cache"
+    apply_wp_redis_config "mytest.com" "${tmp_base}/www/wwwroot/mytest.com" 5
+    list_out=$(AAPANEL_OLS_VHOST_DIR="${tmp_base}/www/server/panel/vhost/openlitespeed" AAPANEL_WWWROOT_DIR="${tmp_base}/www/wwwroot" WP_ISOLATE_DIR="${tmp_base}/opt/wp-isolate" bash "${SCRIPT_DIR}/bin/wp-isolate" list)
+    echo "$list_out" | grep -q "DB 5" || { echo "Expected DB 5 in list output for LSCache site"; exit 1; }
+    local status_lscache
+    status_lscache=$(AAPANEL_OLS_VHOST_DIR="${tmp_base}/www/server/panel/vhost/openlitespeed" AAPANEL_WWWROOT_DIR="${tmp_base}/www/wwwroot" WP_ISOLATE_DIR="${tmp_base}/opt/wp-isolate" bash "${SCRIPT_DIR}/bin/wp-isolate" status mytest.com)
+    echo "$status_lscache" | grep -q "DB 5" || { echo "Expected DB 5 in status output for LSCache site"; exit 1; }
+
     rm -rf "$tmp_base"
     echo "test_cli_workflow PASS"
 }

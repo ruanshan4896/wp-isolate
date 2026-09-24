@@ -19,13 +19,28 @@ $table_prefix = 'wp_';
 require_once ABSPATH . 'wp-settings.php';
 EOF
 
+    # 1. Test standard Redis block (when no litespeed plugin is present)
     apply_wp_redis_config "my-site.com" "$tmp_dir" 3
 
     grep -q "BEGIN WP-ISOLATE REDIS" "${tmp_dir}/wp-config.php" || { echo "Redis block missing"; exit 1; }
     grep -q "define( 'WP_REDIS_DATABASE', 3 )" "${tmp_dir}/wp-config.php" || { echo "DB ID mismatch"; exit 1; }
     grep -q "define( 'WP_CACHE_KEY_SALT', 'my_site_com_' )" "${tmp_dir}/wp-config.php" || { echo "Salt mismatch"; exit 1; }
+    # Verify no redundant LiteSpeed constants in standard setup
+    if grep -q "LITESPEED_CONF" "${tmp_dir}/wp-config.php"; then
+        echo "Unexpected LSCache constants in standard setup"; exit 1
+    fi
+    [[ "$(extract_wp_redis_db "${tmp_dir}/wp-config.php")" -eq 3 ]] || { echo "extract_wp_redis_db mismatch"; exit 1; }
+
+    # 2. Test LiteSpeed Cache block (when litespeed-cache plugin is present)
+    mkdir -p "${tmp_dir}/wp-content/plugins/litespeed-cache"
+    apply_wp_redis_config "my-site.com" "$tmp_dir" 3
     grep -q "define( 'LITESPEED_CONF__OBJECT__DB_ID', 3 )" "${tmp_dir}/wp-config.php" || { echo "LSCache DB ID mismatch"; exit 1; }
     grep -q "define( 'LITESPEED_CONF__OBJECT__KEY_PREFIX', 'my_site_com_' )" "${tmp_dir}/wp-config.php" || { echo "LSCache prefix mismatch"; exit 1; }
+    # Verify no redundant WP_REDIS_DATABASE in LiteSpeed setup
+    if grep -q "WP_REDIS_DATABASE" "${tmp_dir}/wp-config.php"; then
+        echo "Unexpected WP_REDIS_DATABASE constant in LiteSpeed setup"; exit 1
+    fi
+    [[ "$(extract_wp_redis_db "${tmp_dir}/wp-config.php")" -eq 3 ]] || { echo "extract_wp_redis_db mismatch for LiteSpeed"; exit 1; }
 
     # Test idempotency (applying again doesn't duplicate)
     apply_wp_redis_config "my-site.com" "$tmp_dir" 3

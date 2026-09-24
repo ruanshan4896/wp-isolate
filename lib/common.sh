@@ -25,6 +25,12 @@ sanitize_domain_to_user() {
     fi
     echo "$user"
 }
+
+get_site_user() {
+    local domain="$1"
+    sanitize_domain_to_user "$domain"
+}
+
 # Cross-platform in-place sed helper (works on both Linux and macOS/BSD)
 sed_i() {
     if [ "$(uname)" = "Darwin" ]; then
