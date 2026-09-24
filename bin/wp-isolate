@@ -301,7 +301,8 @@ cmd_isolate() {
 
     # Warm up site with an HTTP request so WordPress and LiteSpeed Cache immediately connect and populate Redis
     if [ "$enable_redis" = true ]; then
-        curl -s -k -m 3 -H "Host: ${domain}" "http://127.0.0.1/" >/dev/null 2>&1 || true
+        curl -s -k -L -m 5 -H "Host: ${domain}" "http://127.0.0.1/" >/dev/null 2>&1 || true
+        curl -s -k -L -m 5 -H "Host: ${domain}" "https://127.0.0.1/" >/dev/null 2>&1 || true
     fi
 
     update_site_registry "$domain" "$user" "${redis_db:-}"
