@@ -87,15 +87,18 @@ optimize_global_php_config() {
         
         # Tăng Upload & Post max size
         if ! grep -q "upload_max_filesize.*=.*256M" "$ini" 2>/dev/null; then
-            sed_i -E 's/^upload_max_filesize[[:space:]]*=.*/upload_max_filesize = 256M/' "$ini"
+            sed_i '/upload_max_filesize/d' "$ini"
+            echo "upload_max_filesize = 256M" >> "$ini"
             changed=true
         fi
         if ! grep -q "post_max_size.*=.*256M" "$ini" 2>/dev/null; then
-            sed_i -E 's/^post_max_size[[:space:]]*=.*/post_max_size = 256M/' "$ini"
+            sed_i '/post_max_size/d' "$ini"
+            echo "post_max_size = 256M" >> "$ini"
             changed=true
         fi
         if ! grep -q "max_execution_time.*=.*300" "$ini" 2>/dev/null; then
-            sed_i -E 's/^max_execution_time[[:space:]]*=.*/max_execution_time = 300/' "$ini"
+            sed_i '/max_execution_time/d' "$ini"
+            echo "max_execution_time = 300" >> "$ini"
             changed=true
         fi
         
