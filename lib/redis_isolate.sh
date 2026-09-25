@@ -331,7 +331,7 @@ EOF
     fi
     chmod 640 "$wp_config" 2>/dev/null || true
     if command -v setfacl >/dev/null 2>&1; then
-        setfacl -m u:www:0 "$wp_config" 2>/dev/null || true
+        setfacl -m u:www:rw "$wp_config" 2>/dev/null || true
     fi
 
     log_success "Redis cache configuration injected into $wp_config."
