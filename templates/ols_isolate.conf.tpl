@@ -34,6 +34,8 @@ phpIniOverride {
   php_value session.save_path "/tmp"
   php_value upload_tmp_dir "/tmp"
   php_value max_execution_time 300
+  php_value upload_max_filesize 256M
+  php_value post_max_size 256M
 }
 
 # L7 Anti-DDoS and Request Throttling
