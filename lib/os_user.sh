@@ -73,6 +73,23 @@ apply_site_permissions() {
     # Restrict sensitive config files (wp-config.php, .env)
     for conf_file in "$docroot/wp-config.php" "$docroot/.env"; do
         if [ -f "$conf_file" ]; then
+            if [ "$(basename "$conf_file")" = "wp-config.php" ]; then
+                if ! grep -q "'FS_METHOD'" "$conf_file"; then
+                    local block="
+/* BEGIN WP-ISOLATE FS_METHOD */
+if ( ! defined( 'FS_METHOD' ) ) {
+    define( 'FS_METHOD', 'direct' );
+}
+/* END WP-ISOLATE FS_METHOD */"
+                    {
+                        head -n 1 "$conf_file"
+                        printf "%s\n" "$block"
+                        tail -n +2 "$conf_file"
+                    } > "${conf_file}.tmp" && mv "${conf_file}.tmp" "$conf_file"
+                    log_info "Injected FS_METHOD direct into $conf_file"
+                fi
+            fi
+
             if [ "${EUID:-$(id -u)}" -eq 0 ]; then
                 chown "${user}:${user}" "$conf_file"
             fi
