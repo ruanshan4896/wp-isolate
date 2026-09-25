@@ -457,6 +457,49 @@ cmd_repair() {
     fi
 }
 
+cmd_clean() {
+    local target_domain="${1:-}"
+    if [ -z "$target_domain" ]; then
+        log_error "Usage: wp-isolate clean <domain>"
+        exit 1
+    fi
+
+    log_info "Cleaning up stale cache and sockets for $target_domain..."
+    local docroot="/www/wwwroot/${target_domain}"
+    
+    if [ ! -d "$docroot" ]; then
+        log_error "Directory $docroot does not exist!"
+        exit 1
+    fi
+
+    # 1. Xóa rác Object Cache
+    rm -f "${docroot}/wp-content/object-cache.php" 2>/dev/null
+    rm -f "${docroot}/wp-content/advanced-cache.php" 2>/dev/null
+    
+    # 2. Xóa .user.ini cũ nếu có
+    rm -f "${docroot}/.user.ini" 2>/dev/null
+
+    # 3. Tắt WP_CACHE trong wp-config.php
+    if [ -f "${docroot}/wp-config.php" ]; then
+        sed_i -E "s/define\([[:space:]]*['\"]WP_CACHE['\"].*/define( 'WP_CACHE', false );/g" "${docroot}/wp-config.php"
+    fi
+
+    # 4. Xóa Socket kẹt quyền của LiteSpeed
+    rm -f "/tmp/lshttpd/${target_domain}"* 2>/dev/null
+
+    # 5. Phân quyền và cô lập lại
+    local user
+    user=$(get_site_user "$target_domain")
+    isolate_ols_vhost "$target_domain" "$user" 15 "512M" 10 "$docroot"
+    apply_site_permissions "$target_domain" "$docroot"
+
+    # 6. Khởi động lại PHP
+    killall -9 lsphp 2>/dev/null || true
+    systemctl restart lsws 2>/dev/null || true
+
+    log_success "Cleaned and repaired $target_domain perfectly!"
+}
+
 cmd_isolate_all() {
     local force=false
     local args=()
@@ -557,6 +600,7 @@ case "$ACTION" in
     status)      cmd_status "$@" ;;
     verify)      cmd_verify "$@" ;;
     repair)      cmd_repair "$@" ;;
+    clean)       cmd_clean "$@" ;;
     help|--help|-h) cmd_help ;;
     *)
         log_error "Unknown command: $ACTION"
