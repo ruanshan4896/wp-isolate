@@ -69,3 +69,34 @@ check_prerequisites() {
     done
     return 0
 }
+
+optimize_global_php_opcache() {
+    local restarted=false
+    # Check OLS standalone PHP paths (Debian/Ubuntu)
+    for ini in /usr/local/lsws/lsphp*/etc/php/*/litespeed/php.ini; do
+        if [ -f "$ini" ]; then
+            if ! grep -q "opcache.interned_strings_buffer.*=.*32" "$ini" 2>/dev/null; then
+                sed_i '/opcache.interned_strings_buffer/d' "$ini"
+                echo "opcache.interned_strings_buffer=32" >> "$ini"
+                restarted=true
+            fi
+        fi
+    done
+    
+    # Check standard aaPanel PHP paths (CentOS/generic)
+    for ini in /www/server/php/*/etc/php.ini; do
+        if [ -f "$ini" ]; then
+            if ! grep -q "opcache.interned_strings_buffer.*=.*32" "$ini" 2>/dev/null; then
+                sed_i '/opcache.interned_strings_buffer/d' "$ini"
+                echo "opcache.interned_strings_buffer=32" >> "$ini"
+                restarted=true
+            fi
+        fi
+    done
+
+    if [ "$restarted" = true ]; then
+        log_info "Global OPcache interned_strings_buffer optimized to 32MB. Restarting OLS & lsphp..."
+        killall -9 lsphp 2>/dev/null || true
+        systemctl restart lsws 2>/dev/null || true
+    fi
+}
