@@ -78,9 +78,9 @@ apply_site_permissions() {
             fi
             chmod 640 "$conf_file"
             if command -v setfacl >/dev/null 2>&1; then
-                setfacl -m u:www:0 "$conf_file" 2>/dev/null || true
+                setfacl -m u:www:r "$conf_file" 2>/dev/null || true
             fi
-            log_info "Secured configuration file: $conf_file (640, isolated from other users)"
+            log_info "Secured configuration file: $conf_file (640, isolated from other users, readable by www)"
         fi
     done
     log_success "Permissions applied successfully."
