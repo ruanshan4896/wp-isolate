@@ -70,32 +70,56 @@ check_prerequisites() {
     return 0
 }
 
-optimize_global_php_opcache() {
+optimize_global_php_config() {
     local restarted=false
+    
+    # Hàm con dùng để sửa file php.ini
+    apply_php_optimizations() {
+        local ini="$1"
+        local changed=false
+        
+        # OPcache
+        if ! grep -q "opcache.interned_strings_buffer.*=.*32" "$ini" 2>/dev/null; then
+            sed_i '/opcache.interned_strings_buffer/d' "$ini"
+            echo "opcache.interned_strings_buffer=32" >> "$ini"
+            changed=true
+        fi
+        
+        # Tăng Upload & Post max size
+        if ! grep -q "upload_max_filesize.*=.*256M" "$ini" 2>/dev/null; then
+            sed_i -E 's/^upload_max_filesize[[:space:]]*=.*/upload_max_filesize = 256M/' "$ini"
+            changed=true
+        fi
+        if ! grep -q "post_max_size.*=.*256M" "$ini" 2>/dev/null; then
+            sed_i -E 's/^post_max_size[[:space:]]*=.*/post_max_size = 256M/' "$ini"
+            changed=true
+        fi
+        if ! grep -q "max_execution_time.*=.*300" "$ini" 2>/dev/null; then
+            sed_i -E 's/^max_execution_time[[:space:]]*=.*/max_execution_time = 300/' "$ini"
+            changed=true
+        fi
+        
+        if [ "$changed" = true ]; then
+            restarted=true
+        fi
+    }
+
     # Check OLS standalone PHP paths (Debian/Ubuntu)
     for ini in /usr/local/lsws/lsphp*/etc/php/*/litespeed/php.ini; do
         if [ -f "$ini" ]; then
-            if ! grep -q "opcache.interned_strings_buffer.*=.*32" "$ini" 2>/dev/null; then
-                sed_i '/opcache.interned_strings_buffer/d' "$ini"
-                echo "opcache.interned_strings_buffer=32" >> "$ini"
-                restarted=true
-            fi
+            apply_php_optimizations "$ini"
         fi
     done
     
     # Check standard aaPanel PHP paths (CentOS/generic)
     for ini in /www/server/php/*/etc/php.ini; do
         if [ -f "$ini" ]; then
-            if ! grep -q "opcache.interned_strings_buffer.*=.*32" "$ini" 2>/dev/null; then
-                sed_i '/opcache.interned_strings_buffer/d' "$ini"
-                echo "opcache.interned_strings_buffer=32" >> "$ini"
-                restarted=true
-            fi
+            apply_php_optimizations "$ini"
         fi
     done
 
     if [ "$restarted" = true ]; then
-        log_info "Global OPcache interned_strings_buffer optimized to 32MB. Restarting OLS & lsphp..."
+        log_info "Global PHP Configurations (OPcache, Upload, Post, Time) optimized to MAX. Restarting OLS & lsphp..."
         killall -9 lsphp 2>/dev/null || true
         systemctl restart lsws 2>/dev/null || true
     fi

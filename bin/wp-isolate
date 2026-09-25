@@ -473,8 +473,8 @@ cmd_isolate_all() {
         fi
     done
 
-    log_info "Running global PHP OPcache optimization..."
-    optimize_global_php_opcache
+    log_info "Running global PHP Configuration optimizations..."
+    optimize_global_php_config
 
     log_info "Scanning for websites on aaPanel..."
     local count=0
