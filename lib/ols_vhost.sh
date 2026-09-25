@@ -129,9 +129,9 @@ isolate_ols_vhost() {
     local mem_limit="${4:-512M}"
     local req_limit="${5:-10}"
     local docroot="${6:-/www/wwwroot/${domain}}"
-
-    local outer_file="/www/server/panel/vhost/openlitespeed/${domain}.conf"
-    local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+    local vhost_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+    local outer_file="${vhost_dir}/${domain}.conf"
+    local detail_file="${vhost_dir}/detail/${domain}.conf"
 
     # Memory and process limits
     local mem_num="${mem_limit%M}"
@@ -193,8 +193,9 @@ EOF
 
 restore_ols_vhost() {
     local domain="$1"
-    local outer_file="/www/server/panel/vhost/openlitespeed/${domain}.conf"
-    local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+    local vhost_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+    local outer_file="${vhost_dir}/${domain}.conf"
+    local detail_file="${vhost_dir}/detail/${domain}.conf"
 
     if [ -f "$outer_file" ]; then
         sed_i -E "s/setUIDMode[[:space:]]+[0-9]+/setUIDMode 0/" "$outer_file"
