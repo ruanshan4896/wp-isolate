@@ -457,6 +457,46 @@ cmd_repair() {
     fi
 }
 
+cmd_healer() {
+    local action="${1:-enable}"
+    local svc_file="/etc/systemd/system/wp-isolate-healer.service"
+    local bin_path="${SCRIPT_DIR}/bin/wp-isolate-healer"
+    
+    chmod +x "$bin_path"
+    
+    if [ "$action" = "enable" ]; then
+        cat <<EOF > "$svc_file"
+[Unit]
+Description=WP-Isolate 503 Auto-Healer Daemon
+After=network.target lsws.service
+
+[Service]
+Type=simple
+ExecStart=${bin_path}
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        systemctl enable wp-isolate-healer.service
+        systemctl restart wp-isolate-healer.service
+        log_success "Auto-Healer daemon is now ENABLED and running in the background."
+        log_info "It will instantly detect 503 crashes and automatically repair them!"
+    elif [ "$action" = "disable" ]; then
+        systemctl stop wp-isolate-healer.service 2>/dev/null || true
+        systemctl disable wp-isolate-healer.service 2>/dev/null || true
+        rm -f "$svc_file"
+        systemctl daemon-reload
+        log_success "Auto-Healer daemon has been DISABLED."
+    else
+        log_error "Usage: wp-isolate healer [enable|disable]"
+        exit 1
+    fi
+}
+
 cmd_clean() {
     local target_domain="${1:-}"
     if [ -z "$target_domain" ]; then
@@ -602,6 +642,7 @@ case "$ACTION" in
     verify)      cmd_verify "$@" ;;
     repair)      cmd_repair "$@" ;;
     clean)       cmd_clean "$@" ;;
+    healer)      cmd_healer "$@" ;;
     help|--help|-h) cmd_help ;;
     *)
         log_error "Unknown command: $ACTION"
