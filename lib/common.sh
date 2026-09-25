@@ -80,24 +80,36 @@ optimize_global_php_config() {
         
         # OPcache
         if ! grep -q "opcache.interned_strings_buffer.*=.*32" "$ini" 2>/dev/null; then
-            sed_i '/opcache.interned_strings_buffer/d' "$ini"
+            sed_i '/^[[:space:]]*;*[[:space:]]*opcache\.interned_strings_buffer[[:space:]]*=/d' "$ini"
             echo "opcache.interned_strings_buffer=32" >> "$ini"
+            changed=true
+        fi
+        
+        # JIT Compiler (Cho PHP 8+)
+        if ! grep -q "opcache.jit[[:space:]]*=.*tracing" "$ini" 2>/dev/null; then
+            sed_i '/^[[:space:]]*;*[[:space:]]*opcache\.jit[[:space:]]*=/d' "$ini"
+            echo "opcache.jit = tracing" >> "$ini"
+            changed=true
+        fi
+        if ! grep -q "opcache.jit_buffer_size.*=.*64M" "$ini" 2>/dev/null; then
+            sed_i '/^[[:space:]]*;*[[:space:]]*opcache\.jit_buffer_size[[:space:]]*=/d' "$ini"
+            echo "opcache.jit_buffer_size = 64M" >> "$ini"
             changed=true
         fi
         
         # Tăng Upload & Post max size
         if ! grep -q "upload_max_filesize.*=.*256M" "$ini" 2>/dev/null; then
-            sed_i '/upload_max_filesize/d' "$ini"
+            sed_i '/^[[:space:]]*;*[[:space:]]*upload_max_filesize[[:space:]]*=/d' "$ini"
             echo "upload_max_filesize = 256M" >> "$ini"
             changed=true
         fi
         if ! grep -q "post_max_size.*=.*256M" "$ini" 2>/dev/null; then
-            sed_i '/post_max_size/d' "$ini"
+            sed_i '/^[[:space:]]*;*[[:space:]]*post_max_size[[:space:]]*=/d' "$ini"
             echo "post_max_size = 256M" >> "$ini"
             changed=true
         fi
         if ! grep -q "max_execution_time.*=.*300" "$ini" 2>/dev/null; then
-            sed_i '/max_execution_time/d' "$ini"
+            sed_i '/^[[:space:]]*;*[[:space:]]*max_execution_time[[:space:]]*=/d' "$ini"
             echo "max_execution_time = 300" >> "$ini"
             changed=true
         fi
