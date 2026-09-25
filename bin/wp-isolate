@@ -473,19 +473,20 @@ cmd_clean() {
     fi
 
     # 1. Xóa rác Object Cache
-    rm -f "${docroot}/wp-content/object-cache.php" 2>/dev/null
-    rm -f "${docroot}/wp-content/advanced-cache.php" 2>/dev/null
+    rm -f "${docroot}/wp-content/object-cache.php" 2>/dev/null || true
+    rm -f "${docroot}/wp-content/advanced-cache.php" 2>/dev/null || true
     
-    # 2. Xóa .user.ini cũ nếu có
-    rm -f "${docroot}/.user.ini" 2>/dev/null
+    # 2. Xóa .user.ini cũ nếu có (aaPanel thường khóa chattr +i file này)
+    chattr -i "${docroot}/.user.ini" 2>/dev/null || true
+    rm -f "${docroot}/.user.ini" 2>/dev/null || true
 
     # 3. Tắt WP_CACHE trong wp-config.php
     if [ -f "${docroot}/wp-config.php" ]; then
-        sed_i -E "s/define\([[:space:]]*['\"]WP_CACHE['\"].*/define( 'WP_CACHE', false );/g" "${docroot}/wp-config.php"
+        sed_i -E "s/define\([[:space:]]*['\"]WP_CACHE['\"].*/define( 'WP_CACHE', false );/g" "${docroot}/wp-config.php" || true
     fi
 
     # 4. Xóa Socket kẹt quyền của LiteSpeed
-    rm -f "/tmp/lshttpd/${target_domain}"* 2>/dev/null
+    rm -f "/tmp/lshttpd/${target_domain}"* 2>/dev/null || true
 
     # 5. Phân quyền và cô lập lại
     local user
