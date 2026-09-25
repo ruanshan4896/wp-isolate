@@ -51,6 +51,13 @@ EOF
     status_lscache=$(AAPANEL_OLS_VHOST_DIR="${tmp_base}/www/server/panel/vhost/openlitespeed" AAPANEL_WWWROOT_DIR="${tmp_base}/www/wwwroot" WP_ISOLATE_DIR="${tmp_base}/opt/wp-isolate" bash "${SCRIPT_DIR}/bin/wp-isolate" status mytest.com)
     echo "$status_lscache" | grep -q "DB 5" || { echo "Expected DB 5 in status output for LSCache site"; exit 1; }
 
+    # Test clean command on mock site
+    touch "${tmp_base}/www/wwwroot/mytest.com/wp-content/object-cache.php"
+    touch "${tmp_base}/www/wwwroot/mytest.com/.user.ini"
+    AAPANEL_OLS_VHOST_DIR="${tmp_base}/www/server/panel/vhost/openlitespeed" AAPANEL_WWWROOT_DIR="${tmp_base}/www/wwwroot" WP_ISOLATE_DIR="${tmp_base}/opt/wp-isolate" bash "${SCRIPT_DIR}/bin/wp-isolate" clean mytest.com >/dev/null
+    [ ! -f "${tmp_base}/www/wwwroot/mytest.com/wp-content/object-cache.php" ] || { echo "Clean failed to remove object-cache.php"; exit 1; }
+    [ ! -f "${tmp_base}/www/wwwroot/mytest.com/.user.ini" ] || { echo "Clean failed to remove .user.ini"; exit 1; }
+
     rm -rf "$tmp_base"
     echo "test_cli_workflow PASS"
 }

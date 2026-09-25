@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 # lib/os_user.sh - Linux user and filesystem ACL isolation for wp-isolate
 
-get_site_user() {
-    local domain="$1"
-    sanitize_domain_to_user "$domain"
-}
-
 create_isolated_user() {
     local domain="$1"
     local docroot="${2:-/www/wwwroot/${domain}}"
@@ -145,5 +140,13 @@ restore_site_permissions() {
     if [ -f "$docroot/.user.ini" ]; then
         chattr +i "$docroot/.user.ini" 2>/dev/null || true
     fi
+
+    # Clean any injected wp-config.php isolation blocks
+    local wp_config="$docroot/wp-config.php"
+    if [ -f "$wp_config" ]; then
+        sed_i '/\/\* BEGIN WP-ISOLATE FS_METHOD \*\//,/\/\* END WP-ISOLATE FS_METHOD \*\//d' "$wp_config"
+        sed_i '/\/\* BEGIN WP-ISOLATE MEMORY \*\//,/\/\* END WP-ISOLATE MEMORY \*\//d' "$wp_config"
+    fi
+
     log_success "Restored permissions to www:www."
 }

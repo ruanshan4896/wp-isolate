@@ -18,10 +18,9 @@ if [ "$SCRIPT_DIR" != "$INSTALL_DIR" ]; then
     echo "       git clone https://github.com/ruanshan4896/wp-isolate.git $INSTALL_DIR"
     
     # Fallback to copy if they didn't clone into /opt/wp-isolate
-    mkdir -p "${INSTALL_DIR}/bin" "${INSTALL_DIR}/lib" "${INSTALL_DIR}/templates"
+    mkdir -p "${INSTALL_DIR}/bin" "${INSTALL_DIR}/lib"
     cp -r "${SCRIPT_DIR}/bin/"* "${INSTALL_DIR}/bin/"
     cp -r "${SCRIPT_DIR}/lib/"* "${INSTALL_DIR}/lib/"
-    cp -r "${SCRIPT_DIR}/templates/"* "${INSTALL_DIR}/templates/"
 fi
 
 mkdir -p "${INSTALL_DIR}/data" "${INSTALL_DIR}/backups" "${INSTALL_DIR}/vhosts"

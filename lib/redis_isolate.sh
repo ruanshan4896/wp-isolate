@@ -13,7 +13,8 @@ if ! command -v sanitize_domain_to_user >/dev/null 2>&1; then
         local domain="$1"
         local clean
         clean=$(echo "$domain" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '_' | sed 's/__*/_/g' | sed 's/^_//;s/_$//')
-        clean="${clean:0:28}"
+        clean="${clean:0:31}"
+        clean=$(echo "$clean" | sed 's/_$//')
         echo "iso_${clean}"
     }
 fi
@@ -574,7 +575,6 @@ remove_wp_redis_config() {
             cat << 'EOF' > "$reset_script"
 <?php
 define('WP_USE_THEMES', false);
-define('DOING_CRON', true);
 $root = dirname(__FILE__);
 if (file_exists($root . '/wp-load.php')) {
     require_once $root . '/wp-load.php';
@@ -587,6 +587,7 @@ EOF
             $php_bin "$reset_script" >/dev/null 2>&1 || true
             rm -f "$reset_script"
         fi
+        rm -f "${docroot}/wp-content/.litespeed_conf.dat" 2>/dev/null || true
     fi
 
     # Flush that database in Redis

@@ -92,6 +92,8 @@ Core Commands:
   status <domain>               Display detailed isolation status and metrics
   verify                        Audit system integrity and check for configuration drift
   repair [domain]               Re-apply isolated configuration hooks
+  clean <domain|all>            Purge stale cache, broken sockets & lockfiles to resolve 503s
+  healer <enable|disable|status> Manage background auto-healer daemon for 503 recovery
 
 Options for 'isolate':
   --max-conns <num>             Max concurrent PHP workers (Default: 15)
@@ -106,6 +108,8 @@ Examples:
   wp-isolate list
   wp-isolate isolate example.com --max-conns 20 --mem-limit 512M
   wp-isolate restore example.com
+  wp-isolate clean example.com
+  wp-isolate healer enable
   wp-isolate status example.com
 EOF
 }
@@ -458,14 +462,15 @@ cmd_repair() {
 }
 
 cmd_healer() {
-    local action="${1:-enable}"
+    local action="${1:-status}"
     local svc_file="/etc/systemd/system/wp-isolate-healer.service"
     local bin_path="${SCRIPT_DIR}/bin/wp-isolate-healer"
     
-    chmod +x "$bin_path"
+    chmod +x "$bin_path" 2>/dev/null || true
     
-    if [ "$action" = "enable" ]; then
-        cat <<EOF > "$svc_file"
+    case "$action" in
+        enable|start)
+            cat <<EOF > "$svc_file"
 [Unit]
 Description=WP-Isolate 503 Auto-Healer Daemon
 After=network.target lsws.service
@@ -480,65 +485,112 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl daemon-reload
-        systemctl enable wp-isolate-healer.service
-        systemctl restart wp-isolate-healer.service
-        log_success "Auto-Healer daemon is now ENABLED and running in the background."
-        log_info "It will instantly detect 503 crashes and automatically repair them!"
-    elif [ "$action" = "disable" ]; then
-        systemctl stop wp-isolate-healer.service 2>/dev/null || true
-        systemctl disable wp-isolate-healer.service 2>/dev/null || true
-        rm -f "$svc_file"
-        systemctl daemon-reload
-        log_success "Auto-Healer daemon has been DISABLED."
-    else
-        log_error "Usage: wp-isolate healer [enable|disable]"
-        exit 1
-    fi
+            systemctl daemon-reload
+            systemctl enable wp-isolate-healer.service
+            systemctl restart wp-isolate-healer.service
+            log_success "Auto-Healer daemon is now ENABLED and running in the background."
+            log_info "It will instantly detect 503 crashes and automatically repair them!"
+            ;;
+        disable|stop)
+            systemctl stop wp-isolate-healer.service 2>/dev/null || true
+            systemctl disable wp-isolate-healer.service 2>/dev/null || true
+            rm -f "$svc_file"
+            systemctl daemon-reload
+            log_success "Auto-Healer daemon has been DISABLED."
+            ;;
+        restart)
+            systemctl restart wp-isolate-healer.service 2>/dev/null || true
+            log_success "Auto-Healer daemon restarted."
+            ;;
+        status)
+            if systemctl is-active --quiet wp-isolate-healer.service 2>/dev/null; then
+                log_success "Auto-Healer daemon is RUNNING."
+            else
+                log_warn "Auto-Healer daemon is NOT running."
+            fi
+            systemctl status wp-isolate-healer.service --no-pager 2>/dev/null || true
+            ;;
+        *)
+            log_error "Usage: wp-isolate healer [enable|disable|restart|status]"
+            exit 1
+            ;;
+    esac
 }
 
-cmd_clean() {
-    local target_domain="${1:-}"
-    if [ -z "$target_domain" ]; then
-        log_error "Usage: wp-isolate clean <domain>"
-        exit 1
+clean_single_domain() {
+    local target_domain="$1"
+    local vhost_file
+    vhost_file=$(detect_ols_vhost_file "$target_domain" 2>/dev/null || true)
+    local docroot
+    docroot=$(detect_vhost_docroot "$target_domain" "$vhost_file" 2>/dev/null || echo "/www/wwwroot/${target_domain}")
+
+    if [ ! -d "$docroot" ]; then
+        log_warn "Directory $docroot does not exist. Skipping $target_domain."
+        return 0
     fi
 
     log_info "Cleaning up stale cache and sockets for $target_domain..."
-    local docroot="/www/wwwroot/${target_domain}"
-    
-    if [ ! -d "$docroot" ]; then
-        log_error "Directory $docroot does not exist!"
-        exit 1
-    fi
 
-    # 1. Xóa rác Object Cache
+    # 1. Clean Object Cache drop-ins
     rm -f "${docroot}/wp-content/object-cache.php" 2>/dev/null || true
     rm -f "${docroot}/wp-content/advanced-cache.php" 2>/dev/null || true
-    
-    # 2. Xóa .user.ini cũ nếu có (aaPanel thường khóa chattr +i file này)
-    chattr -i "${docroot}/.user.ini" 2>/dev/null || true
-    rm -f "${docroot}/.user.ini" 2>/dev/null || true
+    rm -f "${docroot}/wp-content/.litespeed_conf.dat" 2>/dev/null || true
 
-    # 3. Tắt WP_CACHE trong wp-config.php
-    if [ -f "${docroot}/wp-config.php" ]; then
-        sed_i -E "s/define\([[:space:]]*['\"]WP_CACHE['\"].*/define( 'WP_CACHE', false );/g" "${docroot}/wp-config.php" || true
+    # 2. Remove legacy .user.ini (aaPanel locks with chattr +i)
+    if [ -f "${docroot}/.user.ini" ]; then
+        chattr -i "${docroot}/.user.ini" 2>/dev/null || true
+        rm -f "${docroot}/.user.ini" 2>/dev/null || true
     fi
 
-    # 4. Xóa Socket kẹt quyền của LiteSpeed
+    # 3. Disable WP_CACHE in wp-config.php if present
+    if [ -f "${docroot}/wp-config.php" ]; then
+        sed_i -E "s/define\([[:space:]]*['\"]WP_CACHE['\"].*/define( 'WP_CACHE', false );/g" "${docroot}/wp-config.php" 2>/dev/null || true
+    fi
+
+    # 4. Remove LiteSpeed socket files
     rm -f "/tmp/lshttpd/${target_domain}"* 2>/dev/null || true
 
-    # 5. Phân quyền và cô lập lại
+    # 5. Re-apply permissions and vhost configuration
     local user
     user=$(get_site_user "$target_domain")
     isolate_ols_vhost "$target_domain" "$user" 15 "512M" 10 "$docroot"
     apply_site_permissions "$target_domain" "$docroot"
 
-    # 6. Khởi động lại PHP
-    killall -9 lsphp 2>/dev/null || true
-    systemctl restart lsws 2>/dev/null || true
+    log_success "Cleaned and repaired $target_domain."
+}
 
-    log_success "Cleaned and repaired $target_domain perfectly!"
+cmd_clean() {
+    local target_domain="${1:-}"
+    if [ -z "$target_domain" ]; then
+        log_error "Usage: wp-isolate clean <domain|all>"
+        exit 1
+    fi
+
+    if [ "$target_domain" = "all" ]; then
+        log_info "Cleaning all websites on server..."
+        local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+        local wwwroot_dir="${AAPANEL_WWWROOT_DIR:-/www/wwwroot}"
+        local cleaned=0
+
+        if [ -d "$vhost_panel_dir" ]; then
+            for f in "$vhost_panel_dir"/*.conf; do
+                [ -e "$f" ] || continue
+                local d
+                d=$(basename "$f" .conf)
+                [[ "$d" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
+                clean_single_domain "$d"
+                cleaned=$((cleaned + 1))
+            done
+        fi
+        pkill -9 -f lsphp 2>/dev/null || true
+        verify_and_reload_ols
+        log_success "Cleaned $cleaned website(s)."
+    else
+        clean_single_domain "$target_domain"
+        pkill -9 -f lsphp 2>/dev/null || true
+        verify_and_reload_ols
+        log_success "Cleaned and repaired $target_domain perfectly!"
+    fi
 }
 
 cmd_isolate_all() {

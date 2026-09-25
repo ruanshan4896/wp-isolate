@@ -19,7 +19,7 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 
 ---
 
-## 4 Lớp Bảo Vệ & Cô Lập
+## Các Lớp Bảo Vệ & Tự Động Phục Hồi
 
 ```
                                       [ Khách truy cập / Botnet DDoS ]
@@ -35,7 +35,6 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 │                                                                                        │
 │  [ Lớp 2: LSAPI suEXEC Process Isolation ]                                             │
 │   ├── extUser & extGroup: iso_<domain> (Tiến trình PHP chạy danh tính riêng)            │
-│   ├── Socket riêng: uds://tmp/lshttpd/lsphp_<domain>.sock                              │
 │   ├── maxConns: 15 workers (Một site bị flood không thể chiếm hết worker của server)   │
 │   └── memSoftLimit (400M) / memHardLimit (512M) (Chống cạn RAM / OOM Crash)            │
 └────────────────────────────────────────────┬───────────────────────────────────────────┘
@@ -47,7 +46,7 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 │  [ Lớp 3: Phân quyền Linux & POSIX ACL ]                                               │
 │   ├── User riêng: iso_<domain> (Shell: /usr/sbin/nologin)                              │
 │   ├── Thư mục mã nguồn: /www/wwwroot/<domain> (Quyền: 750)                             │
-│   ├── POSIX ACL: Cấp quyền đọc file tĩnh cho 'www', chặn mọi site khác                 │
+│   ├── POSIX ACL: Cấp quyền đọc ghi cho 'www' (WP Toolkit aaPanel hoạt động hoàn hảo)   │
 │   ├── Bảo vệ wp-config.php & .env: Quyền 640 (Chỉ duy nhất site đó được đọc mật khẩu) │
 │   └── PHP open_basedir: Khóa chặt đường dẫn trong docroot và /tmp                      │
 └────────────────────────────────────────────┬───────────────────────────────────────────┘
@@ -63,17 +62,27 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
                                              │
                                              ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ Redis Object Cache Isolation (Layer 5)                                                 │
+│ Redis Object Cache Isolation                                                           │
 │                                                                                        │
 │  [ Lớp 5: Database ID & Cache Key Salt Isolation ]                                     │
 │   ├── Auto-Scaling: Tự động nâng số databases từ 16 lên 64 trong redis.conf            │
 │   ├── Auto-Allocation & Re-use: Cấp phát Database ID (1..63) và bảo lưu nguyên vẹn ID  │
-│   │   khi chạy lại / cô lập hàng loạt (tránh mất cache đang hoạt động)                 │
-│   ├── wp-config.php: Tự động tiêm WP_REDIS_DATABASE & WP_CACHE_KEY_SALT                │
 │   ├── LiteSpeed Cache Sync: Tự động đồng bộ Database ID & Key Prefix vào thẳng plugin  │
-│   │   LiteSpeed Cache (LSCWP), bật Object Cache Redis tự động mà không cần chỉnh tay   │
-│   ├── Chống đè cache tuyệt đối (Zero Cache Collision) nhờ tiền tố Salt theo từng domain │
-│   └── Auto Cleanup: Tự động dọn sạch cache cũ (FLUSHDB) nếu đổi Database ID            │
+│   │   LiteSpeed Cache (LSCWP), sinh drop-in & .litespeed_conf.dat tự động              │
+│   └── Chống đè cache tuyệt đối (Zero Cache Collision) nhờ tiền tố Salt theo từng domain │
+└────────────────────────────────────────────┬───────────────────────────────────────────┘
+                                             │
+                                             ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ Auto-Healing & Global Performance                                                      │
+│                                                                                        │
+│  [ Lớp 6: Auto-Healer Daemon (Bảo Vệ Thời Gian Thực) ]                                 │
+│   ├── Giám sát liên tục log lỗi OpenLiteSpeed thời gian thực                           │
+│   └── Tự động phát hiện 503 Service Unavailable, dọn dẹp socket kẹt và phục hồi site   │
+│                                                                                        │
+│  [ Lớp 7: Global PHP Tuning & OPcache JIT (PHP 8+) ]                                   │
+│   ├── Tự động kích hoạt OPcache JIT compiler (tracing, 64M) cho PHP 8.0+               │
+│   └── Tối ưu upload_max_filesize = 256M, post_max_size = 256M, execution_time = 300   │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -143,13 +152,39 @@ wp-isolate status mywebsite.com
 ```
 Hiển thị đầy đủ thông tin: User Linux, số tiến trình PHP đang chạy thực tế, socket, mức RAM giới hạn, số kết nối MySQL, Redis Database ID / Key Salt, và trạng thái đồng bộ LiteSpeed Cache.
 
-### 6. Kiểm tra & Tự động sửa chữa (Audit & Repair)
+### 6. Khắc phục sự cố 503 & Dọn dẹp sau Restore (Clean)
+Khi vừa restore website từ bản sao lưu hoặc di chuyển dữ liệu gặp lỗi 503 Service Unavailable:
+```bash
+# Sửa lỗi 503, gỡ chattr -i .user.ini, dọn socket và phân quyền lại cho 1 site:
+wp-isolate clean mywebsite.com
+
+# Hoặc dọn dẹp và sửa lỗi toàn bộ website trên server:
+wp-isolate clean all
+```
+
+### 7. Trình tự phục hồi 503 thời gian thực (Auto-Healer Daemon)
+Hệ thống daemon chạy ngầm tự động bắt lỗi trong error log của OpenLiteSpeed và kích hoạt sửa chữa tức thì mà không cần can thiệp thủ công:
+```bash
+# Kiểm tra trạng thái daemon:
+wp-isolate healer status
+
+# Bật / Khởi động daemon:
+wp-isolate healer enable
+
+# Tắt daemon:
+wp-isolate healer disable
+
+# Khởi động lại daemon:
+wp-isolate healer restart
+```
+
+### 8. Kiểm tra & Tự động sửa chữa (Audit & Repair)
 Nếu bạn vừa chỉnh sửa cấu hình domain trên giao diện aaPanel và nghi ngờ aaPanel đã ghi đè cấu hình:
 ```bash
 # Kiểm tra xem có website nào bị mất liên kết cô lập không:
 wp-isolate verify
 
-# Tự động gắn lại liên kết include và sửa quyền file:
+# Tự động gắn lại liên kết suEXEC và sửa quyền file:
 wp-isolate repair mywebsite.com
 # Hoặc sửa lại tất cả các site:
 wp-isolate repair
@@ -170,19 +205,17 @@ wp-isolate repair
 ```
 /opt/wp-isolate/
 ├── bin/
-│   └── wp-isolate               # CLI thực thi chính
+│   ├── wp-isolate               # CLI thực thi chính
+│   └── wp-isolate-healer        # Daemon tự động phục hồi lỗi 503 thời gian thực
 ├── lib/
-│   ├── common.sh                # Helper dùng chung, kiểm tra môi trường
+│   ├── common.sh                # Helper dùng chung, JIT & tối ưu PHP toàn cục
 │   ├── os_user.sh               # Quản lý Linux user & POSIX ACL
 │   ├── ols_vhost.sh             # Điều khiển cấu hình OpenLiteSpeed & suEXEC
 │   ├── mysql_limit.sh           # Quản lý giới hạn kết nối MySQL
-│   └── redis_isolate.sh         # Quản lý cô lập Redis Object Cache
-├── templates/
-│   └── ols_isolate.conf.tpl     # Mẫu cấu hình OLS độc lập per-vhost
-├── vhosts/                      # Cấu hình đã cô lập của từng domain
+│   └── redis_isolate.sh         # Quản lý cô lập Redis Object Cache (DB ID & Salt)
 ├── backups/                     # Thư mục lưu trữ backup tự động
 ├── data/
-│   └── sites.json               # Cơ sở dữ liệu trạng thái hệ thống
+│   └── sites.json               # Cơ sở dữ liệu registry trạng thái hệ thống
 └── tests/                       # Bộ kiểm thử tự động (7 test suites)
 ```
 

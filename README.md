@@ -18,7 +18,7 @@ This project was built to completely resolve the two biggest problems when manag
 
 ---
 
-## 4 Layers of Protection & Isolation
+## Layers of Protection & Auto-Healing
 
 ```
                                       [ Visitors / Botnet DDoS ]
@@ -34,7 +34,6 @@ This project was built to completely resolve the two biggest problems when manag
 │                                                                                        │
 │  [ Layer 2: LSAPI suEXEC Process Isolation ]                                           │
 │   ├── extUser & extGroup: iso_<domain> (PHP processes run under isolated identities)   │
-│   ├── Dedicated socket: uds://tmp/lshttpd/lsphp_<domain>.sock                          │
 │   ├── maxConns: 15 workers (A flooded site cannot exhaust the server's workers)        │
 │   └── memSoftLimit (400M) / memHardLimit (512M) (Prevents RAM exhaustion / OOM Crashes)│
 └────────────────────────────────────────────┬───────────────────────────────────────────┘
@@ -46,7 +45,7 @@ This project was built to completely resolve the two biggest problems when manag
 │  [ Layer 3: Linux Permissions & POSIX ACL ]                                            │
 │   ├── Dedicated User: iso_<domain> (Shell: /usr/sbin/nologin)                          │
 │   ├── Source code directory: /www/wwwroot/<domain> (Perms: 750)                        │
-│   ├── POSIX ACL: Grants static file read access to 'www', blocks all other sites       │
+│   ├── POSIX ACL: Grants read/write to 'www' (Full aaPanel WP Toolkit compatibility)    │
 │   ├── Protected wp-config.php & .env: Perms 640 (Only this site can read its DB pass)  │
 │   └── PHP open_basedir: Strictly locks paths within docroot and /tmp                   │
 └────────────────────────────────────────────┬───────────────────────────────────────────┘
@@ -62,15 +61,26 @@ This project was built to completely resolve the two biggest problems when manag
                                              │
                                              ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ Redis Object Cache Isolation (Layer 5)                                                 │
+│ Redis Object Cache Isolation                                                           │
 │                                                                                        │
 │  [ Layer 5: Database ID & Cache Key Salt Isolation ]                                   │
 │   ├── Auto-Scaling: Automatically increases max databases from 16 to 64 in redis.conf  │
 │   ├── Auto-Allocation & Re-use: Allocates Database IDs (1..63) and preserves them      │
-│   ├── wp-config.php: Auto injects WP_REDIS_DATABASE & WP_CACHE_KEY_SALT                │
-│   ├── LiteSpeed Cache Sync: Auto syncs Database ID & Prefix to LSCache                 │
-│   ├── Zero Cache Collision via unique Key Salt prefixes per domain                     │
-│   └── Auto Cleanup: Automatically flushes old cache if the Database ID changes         │
+│   ├── LiteSpeed Cache Sync: Auto generates drop-in & .litespeed_conf.dat               │
+│   └── Zero Cache Collision via unique Key Salt prefixes per domain                     │
+└────────────────────────────────────────────┬───────────────────────────────────────────┘
+                                             │
+                                             ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ Auto-Healing & Global Performance                                                      │
+│                                                                                        │
+│  [ Layer 6: Auto-Healer Daemon (Real-Time 503 Protection) ]                            │
+│   ├── Continuously monitors OpenLiteSpeed error logs in real-time                      │
+│   └── Automatically intercepts 503 Service Unavailable, clears sockets & repairs site │
+│                                                                                        │
+│  [ Layer 7: Global PHP Tuning & OPcache JIT (PHP 8+) ]                                 │
+│   ├── Auto-activates OPcache JIT compiler (tracing, 64M) for PHP 8.0+                  │
+│   └── Optimizes upload_max_filesize = 256M, post_max_size = 256M, execution_time = 300│
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -131,14 +141,42 @@ wp-isolate restore mywebsite.com
 wp-isolate status mywebsite.com
 ```
 
-### 6. Audit & Repair
+### 6. Clean stale cache & repair 503s (Clean)
+When a site is restored from an aaPanel backup or encounters 503 Service Unavailable:
+```bash
+# Clean stale cache, remove .user.ini immutable lock, purge broken sockets and fix perms:
+wp-isolate clean mywebsite.com
+
+# Or clean and repair all websites on the server:
+wp-isolate clean all
+```
+
+### 7. Real-time auto-healing daemon (Healer)
+A background daemon continuously monitors OpenLiteSpeed error logs and automatically repairs 503 errors instantly:
+```bash
+# Check healer daemon status:
+wp-isolate healer status
+
+# Enable and start daemon:
+wp-isolate healer enable
+
+# Disable daemon:
+wp-isolate healer disable
+
+# Restart daemon:
+wp-isolate healer restart
+```
+
+### 8. Audit & Repair
 If you recently edited a domain's configuration via the aaPanel UI and suspect aaPanel might have overwritten the vhost config:
 ```bash
-# Check if any website has lost its isolation include link:
+# Check if any website has lost its isolation configuration:
 wp-isolate verify
 
-# Automatically re-attach the include link and fix file permissions:
+# Automatically re-apply suEXEC and fix file permissions:
 wp-isolate repair mywebsite.com
+# Or repair all sites:
+wp-isolate repair
 ```
 
 ---
@@ -150,6 +188,25 @@ wp-isolate repair mywebsite.com
 - **Atomic Rollback**: If any errors occur during syntax testing or service reload, the system **instantly reverts changes** to the original backup within 1 second, guaranteeing Zero Downtime.
 
 ---
+
+## Project Structure
+
+```
+/opt/wp-isolate/
+├── bin/
+│   ├── wp-isolate               # Main CLI executable
+│   └── wp-isolate-healer        # Real-time 503 auto-healing background daemon
+├── lib/
+│   ├── common.sh                # Shared helpers, PHP JIT & global tuning
+│   ├── os_user.sh               # Linux user & POSIX ACL isolation
+│   ├── ols_vhost.sh             # OpenLiteSpeed vhost & suEXEC controller
+│   ├── mysql_limit.sh           # MySQL connection pool limit manager
+│   └── redis_isolate.sh         # Redis Object Cache isolation (DB ID & Salt)
+├── backups/                     # Pre-flight automatic backups
+├── data/
+│   └── sites.json               # System state registry database
+└── tests/                       # Automated test suite (7 test suites)
+```
 
 ## Run Tests
 

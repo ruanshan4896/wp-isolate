@@ -2,11 +2,20 @@
 # bin/wp-isolate-healer - Auto-healer daemon for 503 errors
 
 LOG_FILE="/usr/local/lsws/logs/error.log"
-ISOLATE_CMD="/opt/wp-isolate/bin/wp-isolate"
 
+# Dynamically resolve wp-isolate binary
+if command -v wp-isolate >/dev/null 2>&1; then
+    ISOLATE_CMD="wp-isolate"
+elif [ -x "/opt/wp-isolate/bin/wp-isolate" ]; then
+    ISOLATE_CMD="/opt/wp-isolate/bin/wp-isolate"
+else
+    ISOLATE_CMD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wp-isolate"
+fi
+
+# Ensure log directory and file exist so tail does not fail on fresh installations
 if [ ! -f "$LOG_FILE" ]; then
-    echo "Error log not found: $LOG_FILE"
-    exit 1
+    mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+    touch "$LOG_FILE" 2>/dev/null || true
 fi
 
 echo "Starting wp-isolate auto-healer daemon..."

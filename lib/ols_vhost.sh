@@ -69,46 +69,6 @@ detect_php_version() {
     done
     echo "81" # Default fallback
 }
-
-detect_lsphp_executable() {
-    local requested_ver="$1"
-
-    # 1. Check exact requested version
-    if [ -x "/usr/local/lsws/lsphp${requested_ver}/bin/lsphp" ]; then
-        echo "/usr/local/lsws/lsphp${requested_ver}/bin/lsphp"
-        return 0
-    fi
-
-    # 2. Check any other installed version in /usr/local/lsws/
-    for v in 84 83 82 81 80 74 73 72 71 70; do
-        if [ -x "/usr/local/lsws/lsphp${v}/bin/lsphp" ]; then
-            echo "/usr/local/lsws/lsphp${v}/bin/lsphp"
-            return 0
-        fi
-    done
-
-    # 3. Check fcgi-bin
-    for f in /usr/local/lsws/fcgi-bin/lsphp*; do
-        if [ -x "$f" ]; then
-            echo "$f"
-            return 0
-        fi
-    done
-
-    # 4. Check aaPanel PHP paths
-    for p in /www/server/php/*/bin/php; do
-        if [ -x "$p" ]; then
-            echo "$p"
-            return 0
-        fi
-    done
-
-    # Fallback default
-    echo "/usr/local/lsws/lsphp${requested_ver}/bin/lsphp"
-}
-
-
-
 remove_ols_include() {
     local domain="$1"
     local vhost_file="$2"

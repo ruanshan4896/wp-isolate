@@ -85,16 +85,18 @@ optimize_global_php_config() {
             changed=true
         fi
         
-        # JIT Compiler (Cho PHP 8+)
-        if ! grep -q "opcache.jit[[:space:]]*=.*tracing" "$ini" 2>/dev/null; then
-            sed_i '/^[[:space:]]*;*[[:space:]]*opcache\.jit[[:space:]]*=/d' "$ini"
-            echo "opcache.jit = tracing" >> "$ini"
-            changed=true
-        fi
-        if ! grep -q "opcache.jit_buffer_size.*=.*64M" "$ini" 2>/dev/null; then
-            sed_i '/^[[:space:]]*;*[[:space:]]*opcache\.jit_buffer_size[[:space:]]*=/d' "$ini"
-            echo "opcache.jit_buffer_size = 64M" >> "$ini"
-            changed=true
+        # JIT Compiler (Only valid for PHP 8+)
+        if [[ "$ini" =~ (lsphp8|php\/8|php8) ]]; then
+            if ! grep -q "opcache.jit[[:space:]]*=.*tracing" "$ini" 2>/dev/null; then
+                sed_i '/^[[:space:]]*;*[[:space:]]*opcache\.jit[[:space:]]*=/d' "$ini"
+                echo "opcache.jit = tracing" >> "$ini"
+                changed=true
+            fi
+            if ! grep -q "opcache.jit_buffer_size.*=.*64M" "$ini" 2>/dev/null; then
+                sed_i '/^[[:space:]]*;*[[:space:]]*opcache\.jit_buffer_size[[:space:]]*=/d' "$ini"
+                echo "opcache.jit_buffer_size = 64M" >> "$ini"
+                changed=true
+            fi
         fi
         
         # Tăng Upload & Post max size
@@ -134,8 +136,12 @@ optimize_global_php_config() {
     done
 
     if [ "$restarted" = true ]; then
-        log_info "Global PHP Configurations (OPcache, Upload, Post, Time) optimized to MAX. Restarting OLS & lsphp..."
-        killall -9 lsphp 2>/dev/null || true
-        systemctl restart lsws 2>/dev/null || true
+        log_info "Global PHP Configurations (OPcache, Upload, Post, Time) optimized. Reloading lsphp..."
+        pkill -9 -f lsphp 2>/dev/null || true
+        if [ -x "/usr/local/lsws/bin/lswsctrl" ]; then
+            /usr/local/lsws/bin/lswsctrl restart >/dev/null 2>&1 || true
+        elif command -v systemctl >/dev/null 2>&1; then
+            systemctl restart lsws 2>/dev/null || true
+        fi
     fi
 }
