@@ -371,13 +371,13 @@ cmd_status() {
         echo "Linux User:          $user"
         echo "Document Root:       $docroot"
         echo "VHost Config:        $vhost_file"
-        local isolate_conf="${VHOSTS_DIR}/${domain}/ols_isolate.conf"
-        if [ -f "$isolate_conf" ]; then
-            echo "Isolated Config:     $isolate_conf"
-            echo "Max PHP Conns:       $(grep 'maxConns' "$isolate_conf" | awk '{print $2}')"
-            echo "Mem Soft/Hard:       $(grep 'memSoftLimit' "$isolate_conf" | awk '{print $2}') / $(grep 'memHardLimit' "$isolate_conf" | awk '{print $2}')"
-            echo "Per-Client Limit:    $(grep 'perClientConnLimit' "$isolate_conf" | awk '{print $2}')"
-            echo "Dyn Req/Sec:         $(grep 'dynReqPerSec' "$isolate_conf" | awk '{print $2}')"
+        local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+        if [ -f "$detail_file" ]; then
+            echo "Isolated Config:     $detail_file"
+            echo "Max PHP Conns:       $(grep -E "^\s*maxConns" "$detail_file" | awk '{print $2}' || echo "-")"
+            echo "Mem Soft/Hard:       $(grep -E "^\s*memSoftLimit" "$detail_file" | awk '{print $2}' || echo "-") / $(grep -E "^\s*memHardLimit" "$detail_file" | awk '{print $2}' || echo "-")"
+            echo "Per-Client Limit:    $(grep 'perClientConnLimit' "$detail_file" | awk '{print $2}' || echo "-")"
+            echo "Dyn Req/Sec:         $(grep 'dynReqPerSec' "$detail_file" | awk '{print $2}' || echo "-")"
         fi
         local active_workers
         active_workers=$(pgrep -u "$user" 2>/dev/null | wc -l || echo "0")
@@ -415,10 +415,9 @@ cmd_verify() {
             [ -d "$d" ] || continue
             local domain
             domain=$(basename "$d")
-            local vhost_file
-            vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
-            if [ -z "$vhost_file" ] || ! grep -q "WP-ISOLATE: ${domain}" "$vhost_file" 2>/dev/null; then
-                log_warn "Configuration drift detected: $domain isolation include is missing in $vhost_file!"
+            local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+            if [ ! -f "$detail_file" ] || ! grep -q "WP-ISOLATE: ${domain}" "$detail_file" 2>/dev/null; then
+                log_warn "Configuration drift detected: $domain isolation limits are missing in $detail_file!"
                 issues=$((issues + 1))
             fi
         done
@@ -434,28 +433,24 @@ cmd_verify() {
 cmd_repair() {
     local target_domain="${1:-}"
     if [ -n "$target_domain" ]; then
-        local isolate_conf="${VHOSTS_DIR}/${target_domain}/ols_isolate.conf"
-        local vhost_file
-        vhost_file=$(detect_ols_vhost_file "$target_domain" 2>/dev/null || true)
-        if [ -f "$isolate_conf" ] && [ -n "$vhost_file" ]; then
-            inject_ols_include "$target_domain" "$vhost_file" "$isolate_conf"
-            apply_site_permissions "$target_domain" "/www/wwwroot/${target_domain}"
-            verify_and_reload_ols
-            log_success "Repaired $target_domain."
-        fi
+        local user
+        user=$(get_site_user "$target_domain")
+        local docroot="/www/wwwroot/${target_domain}"
+        isolate_ols_vhost "$target_domain" "$user" 15 "512M" 10 "$docroot"
+        apply_site_permissions "$target_domain" "$docroot"
+        verify_and_reload_ols
+        log_success "Repaired $target_domain."
     else
         log_info "Repairing all isolated websites..."
         for d in "$VHOSTS_DIR"/*; do
             [ -d "$d" ] || continue
             local domain
             domain=$(basename "$d")
-            local isolate_conf="${VHOSTS_DIR}/${domain}/ols_isolate.conf"
-            local vhost_file
-            vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
-            if [ -f "$isolate_conf" ] && [ -n "$vhost_file" ]; then
-                inject_ols_include "$domain" "$vhost_file" "$isolate_conf"
-                apply_site_permissions "$domain" "/www/wwwroot/${domain}"
-            fi
+            local user
+            user=$(get_site_user "$domain")
+            local docroot="/www/wwwroot/${domain}"
+            isolate_ols_vhost "$domain" "$user" 15 "512M" 10 "$docroot"
+            apply_site_permissions "$domain" "$docroot"
         done
         verify_and_reload_ols
         log_success "All isolated websites repaired."
