@@ -11,15 +11,20 @@ if [ "${EUID:-$(id -u)}" -ne 0 ]; then
     exit 1
 fi
 
-echo "===> Installing wp-isolate to ${INSTALL_DIR}..."
-
-mkdir -p "${INSTALL_DIR}/bin" "${INSTALL_DIR}/lib" "${INSTALL_DIR}/templates" "${INSTALL_DIR}/data" "${INSTALL_DIR}/backups" "${INSTALL_DIR}/vhosts"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$SCRIPT_DIR" != "$INSTALL_DIR" ]; then
+    echo "[WARNING] You are running install.sh from $SCRIPT_DIR, but the tool expects to be installed in $INSTALL_DIR."
+    echo "[INFO] For the best experience, git clone directly into $INSTALL_DIR:"
+    echo "       git clone https://github.com/ruanshan4896/wp-isolate.git $INSTALL_DIR"
+    
+    # Fallback to copy if they didn't clone into /opt/wp-isolate
+    mkdir -p "${INSTALL_DIR}/bin" "${INSTALL_DIR}/lib" "${INSTALL_DIR}/templates"
+    cp -r "${SCRIPT_DIR}/bin/"* "${INSTALL_DIR}/bin/"
+    cp -r "${SCRIPT_DIR}/lib/"* "${INSTALL_DIR}/lib/"
+    cp -r "${SCRIPT_DIR}/templates/"* "${INSTALL_DIR}/templates/"
+fi
 
-cp -r "${SCRIPT_DIR}/bin/"* "${INSTALL_DIR}/bin/"
-cp -r "${SCRIPT_DIR}/lib/"* "${INSTALL_DIR}/lib/"
-cp -r "${SCRIPT_DIR}/templates/"* "${INSTALL_DIR}/templates/"
+mkdir -p "${INSTALL_DIR}/data" "${INSTALL_DIR}/backups" "${INSTALL_DIR}/vhosts"
 
 chmod +x "${INSTALL_DIR}/bin/wp-isolate"
 

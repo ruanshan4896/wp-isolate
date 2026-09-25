@@ -76,8 +76,8 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 Chạy các lệnh sau dưới quyền `root` trên server của bạn:
 
 ```bash
-git clone https://github.com/ruanshan4896/wp-isolate.git /opt/wp-isolate-src
-cd /opt/wp-isolate-src
+git clone https://github.com/ruanshan4896/wp-isolate.git /opt/wp-isolate
+cd /opt/wp-isolate
 bash install.sh
 ```
 
