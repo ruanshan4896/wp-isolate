@@ -33,6 +33,7 @@ phpIniOverride {
   php_value open_basedir "{{DOCROOT}}/:/tmp/:/dev/urandom"
   php_value session.save_path "/tmp"
   php_value upload_tmp_dir "/tmp"
+  php_value max_execution_time 300
 }
 
 # L7 Anti-DDoS and Request Throttling

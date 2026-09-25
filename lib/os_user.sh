@@ -88,6 +88,21 @@ if ( ! defined( 'FS_METHOD' ) ) {
                     } > "${conf_file}.tmp" && mv "${conf_file}.tmp" "$conf_file"
                     log_info "Injected FS_METHOD direct into $conf_file"
                 fi
+
+                if ! grep -q "'WP_MEMORY_LIMIT'" "$conf_file"; then
+                    local mem_block="
+/* BEGIN WP-ISOLATE MEMORY */
+if ( ! defined( 'WP_MEMORY_LIMIT' ) ) {
+    define( 'WP_MEMORY_LIMIT', '256M' );
+}
+/* END WP-ISOLATE MEMORY */"
+                    {
+                        head -n 1 "$conf_file"
+                        printf "%s\n" "$mem_block"
+                        tail -n +2 "$conf_file"
+                    } > "${conf_file}.tmp" && mv "${conf_file}.tmp" "$conf_file"
+                    log_info "Injected WP_MEMORY_LIMIT 256M into $conf_file"
+                fi
             fi
 
             if [ "${EUID:-$(id -u)}" -eq 0 ]; then
