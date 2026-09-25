@@ -251,6 +251,15 @@ dynReqPerSec ${req_limit}
 outBandwidth 0
 inBandwidth 0
 blockBadReq 1
+
+phpIniOverride {
+  php_value open_basedir "${docroot}/:/tmp/:/dev/urandom"
+  php_value session.save_path "/tmp"
+  php_value upload_tmp_dir "/tmp"
+  php_value max_execution_time 300
+  php_value upload_max_filesize 256M
+  php_value post_max_size 256M
+}
 ### END WP-ISOLATE: ${domain} ###
 EOF
         log_success "Configured suEXEC user and resource limits in $detail_file."
