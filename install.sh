@@ -39,5 +39,9 @@ for cmd in setfacl getfacl; do
     fi
 done
 
+# Setup and enable auto-healer daemon
+echo "[INFO] Setting up Auto-Healer daemon..."
+wp-isolate healer enable || true
+
 echo "===> Installation complete! You can now run 'wp-isolate' from anywhere."
 wp-isolate --help || true
