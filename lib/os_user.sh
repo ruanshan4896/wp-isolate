@@ -66,8 +66,8 @@ apply_site_permissions() {
 
     # Allow aaPanel OLS web worker (www) read access to static assets via POSIX ACL
     if command -v setfacl >/dev/null 2>&1; then
-        setfacl -R -m u:www:rx "$docroot" 2>/dev/null || true
-        setfacl -R -d -m u:www:rx "$docroot" 2>/dev/null || true
+        setfacl -R -m u:www:rwx "$docroot" 2>/dev/null || true
+        setfacl -R -d -m u:www:rwx "$docroot" 2>/dev/null || true
     fi
 
     # Restrict sensitive config files (wp-config.php, .env)
@@ -78,9 +78,9 @@ apply_site_permissions() {
             fi
             chmod 640 "$conf_file"
             if command -v setfacl >/dev/null 2>&1; then
-                setfacl -m u:www:r "$conf_file" 2>/dev/null || true
+                setfacl -m u:www:rw "$conf_file" 2>/dev/null || true
             fi
-            log_info "Secured configuration file: $conf_file (640, isolated from other users, readable by www)"
+            log_info "Secured configuration file: $conf_file (640, isolated from other users, readable/writable by www)"
         fi
     done
     log_success "Permissions applied successfully."
