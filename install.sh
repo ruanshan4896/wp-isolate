@@ -25,7 +25,7 @@ fi
 
 mkdir -p "${INSTALL_DIR}/data" "${INSTALL_DIR}/backups" "${INSTALL_DIR}/vhosts"
 
-chmod +x "${INSTALL_DIR}/bin/wp-isolate"
+chmod +x "${INSTALL_DIR}/bin/wp-isolate" "${INSTALL_DIR}/bin/wp-isolate-sentinel" 2>/dev/null || true
 
 # Create system symlink
 ln -sf "${INSTALL_DIR}/bin/wp-isolate" "$BIN_LINK"
@@ -38,9 +38,12 @@ for cmd in setfacl getfacl; do
     fi
 done
 
-# Setup and enable auto-healer daemon
-echo "[INFO] Setting up Auto-Healer daemon..."
-wp-isolate healer enable || true
+# Setup and enable unified Zero-Touch Sentinel daemon (Auto-Isolate + 503 Healer + Upload Sanitizer)
+echo "[INFO] Activating Zero-Touch Sentinel daemon (15s Debounce & Handshake Verification)..."
+wp-isolate sentinel enable || true
 
-echo "===> Installation complete! You can now run 'wp-isolate' from anywhere."
+echo "===> Installation complete! Zero-Touch Protection is now ACTIVE."
+echo "     - Adding websites on aaPanel will automatically trigger isolation after 15s."
+echo "     - PHP execution in wp-content/uploads/ is blocked natively by OpenLiteSpeed."
+echo "     - You can check status anytime with: wp-isolate sentinel status"
 wp-isolate --help || true

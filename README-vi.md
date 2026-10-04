@@ -28,9 +28,10 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ OpenLiteSpeed Web Server                                                               │
 │                                                                                        │
-│  [ Lớp 1: Anti-DDoS & L7 Throttling ]                                                  │
+│  [ Lớp 1: Anti-DDoS & Native Anti-Malware Uploads Shield ]                              │
 │   ├── perClientConnLimit: 25 conns/IP                                                  │
 │   ├── dynReqPerSec: 10 req/s (Tự động chặn flood dynamic PHP)                          │
+│   ├── Chặn tuyệt đối thực thi *.php trong /wp-content/uploads/ (Chặn webshell 403)     │
 │   └── Chống brute-force /wp-login.php & /xmlrpc.php                                    │
 │                                                                                        │
 │  [ Lớp 2: LSAPI suEXEC Process Isolation ]                                             │
@@ -43,11 +44,11 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ Linux OS & Filesystem                                                                  │
 │                                                                                        │
-│  [ Lớp 3: Phân quyền Linux & POSIX ACL ]                                               │
+│  [ Lớp 3: Phân quyền Linux & Granular POSIX ACL ]                                      │
 │   ├── User riêng: iso_<domain> (Shell: /usr/sbin/nologin)                              │
-│   ├── Thư mục mã nguồn: /www/wwwroot/<domain> (Quyền: 750)                             │
-│   ├── POSIX ACL: Cấp quyền đọc ghi cho 'www' (WP Toolkit aaPanel hoạt động hoàn hảo)   │
-│   ├── Bảo vệ wp-config.php & .env: Quyền 640 (Chỉ duy nhất site đó được đọc mật khẩu) │
+│   ├── Thư mục mã nguồn: /www/wwwroot/<domain> (Quyền: 750, www chỉ đọc rx)             │
+│   ├── Thư mục wp-content/uploads: Cấp quyền rwx cho www (aaPanel WP Toolkit mượt mà)   │
+│   ├── Khóa chặt wp-config.php & .env: Quyền 640, www:0 (Cấm tuyệt đối đọc lén mật khẩu)│
 │   └── PHP open_basedir: Khóa chặt đường dẫn trong docroot và /tmp                      │
 └────────────────────────────────────────────┬───────────────────────────────────────────┘
                                              │
@@ -74,11 +75,13 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
                                              │
                                              ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ Auto-Healing & Global Performance                                                      │
+│ Zero-Touch Sentinel & Global Performance                                               │
 │                                                                                        │
-│  [ Lớp 6: Auto-Healer Daemon (Bảo Vệ Thời Gian Thực) ]                                 │
-│   ├── Giám sát liên tục log lỗi OpenLiteSpeed thời gian thực                           │
-│   └── Tự động phát hiện 503 Service Unavailable, dọn dẹp socket kẹt và phục hồi site   │
+│  [ Lớp 6: Zero-Touch Sentinel Daemon (15s Debounce & Handshake Verification) ]         │
+│   ├── Tự động phát hiện site mới trên aaPanel, chờ 15s lắng dịu rồi tự động cô lập     │
+│   ├── Bắt tay xác minh (Handshake Check) triệt tiêu 100% xung đột lúc tạo site         │
+│   ├── Tự động phát hiện 503 Service Unavailable, dọn dẹp socket kẹt và phục hồi site   │
+│   └── Tự động rà soát & cách ly file PHP độc hại trong uploads định kỳ                 │
 │                                                                                        │
 │  [ Lớp 7: Global PHP Tuning & OPcache JIT (PHP 8+) ]                                   │
 │   ├── Tự động kích hoạt OPcache JIT compiler (tracing, 64M) cho PHP 8.0+               │
@@ -162,23 +165,37 @@ wp-isolate clean mywebsite.com
 wp-isolate clean all
 ```
 
-### 7. Trình tự phục hồi 503 thời gian thực (Auto-Healer Daemon)
-Hệ thống daemon chạy ngầm tự động bắt lỗi trong error log của OpenLiteSpeed và kích hoạt sửa chữa tức thì mà không cần can thiệp thủ công:
+### 7. Vệ Binh Tự Động Hóa Toàn Diện (Zero-Touch Sentinel Daemon)
+Daemon chạy ngầm thống nhất đảm nhiệm 3 nhiệm vụ tự động:
+1. **Tự động cô lập website mới (Zero-Touch)**: Bắt sự kiện tạo site từ aaPanel, đệm lắng dịu 15 giây (Debounce) và kiểm tra bắt tay (Handshake check) để triệt tiêu 100% xung đột lúc tạo site.
+2. **Auto-Healer 503**: Bắt lỗi 503 Service Unavailable thời gian thực trong error.log và tự phục hồi.
+3. **Uploads Sanitizer**: Định kỳ rà soát và cách ly các file `.php` độc hại xuất hiện trái phép trong uploads.
+
 ```bash
-# Kiểm tra trạng thái daemon:
-wp-isolate healer status
+# Kiểm tra trạng thái Sentinel daemon:
+wp-isolate sentinel status
 
 # Bật / Khởi động daemon:
-wp-isolate healer enable
+wp-isolate sentinel enable
 
 # Tắt daemon:
-wp-isolate healer disable
+wp-isolate sentinel disable
 
 # Khởi động lại daemon:
-wp-isolate healer restart
+wp-isolate sentinel restart
 ```
 
-### 8. Kiểm tra & Tự động sửa chữa (Audit & Repair)
+### 8. Rà soát & Tẩy độc Mã nguồn (Scan & Clean)
+Quét toàn diện thư mục uploads, kiểm tra chỉ thị mã độc trong `.user.ini`, `.htaccess`:
+```bash
+# Quét và dọn sạch file .php độc hại trong uploads của 1 site:
+wp-isolate scan mywebsite.com
+
+# Hoặc quét toàn bộ tất cả website trên server:
+wp-isolate scan all
+```
+
+### 9. Kiểm tra & Tự động sửa chữa (Audit & Repair)
 Nếu bạn vừa chỉnh sửa cấu hình domain trên giao diện aaPanel và nghi ngờ aaPanel đã ghi đè cấu hình:
 ```bash
 # Kiểm tra xem có website nào bị mất liên kết cô lập không:

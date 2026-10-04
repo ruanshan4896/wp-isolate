@@ -30,6 +30,7 @@ EOF
     grep -q "extUser                 iso_demo_com" "${tmp_dir}/detail/demo.com.conf" || { echo "extUser mismatch"; exit 1; }
     grep -q "maxConns                15" "${tmp_dir}/detail/demo.com.conf" || { echo "maxConns mismatch"; exit 1; }
     grep -q "dynReqPerSec 10" "${tmp_dir}/detail/demo.com.conf" || { echo "dynReqPerSec mismatch"; exit 1; }
+    grep -q "wp-content/uploads/.*\.php" "${tmp_dir}/detail/demo.com.conf" || { echo "uploads PHP block rule missing"; exit 1; }
     grep -q "php_value upload_max_filesize 256M" "${tmp_dir}/detail/demo.com.conf" || { echo "upload_max_filesize mismatch"; exit 1; }
 
     # Test restore

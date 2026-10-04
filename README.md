@@ -27,9 +27,10 @@ This project was built to completely resolve the two biggest problems when manag
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ OpenLiteSpeed Web Server                                                               │
 │                                                                                        │
-│  [ Layer 1: Anti-DDoS & L7 Throttling ]                                                │
+│  [ Layer 1: Anti-DDoS & Native Anti-Malware Uploads Shield ]                          │
 │   ├── perClientConnLimit: 25 conns/IP                                                  │
 │   ├── dynReqPerSec: 10 req/s (Auto blocks dynamic PHP floods)                          │
+│   ├── Blocks *.php execution in /wp-content/uploads/ (Immediate 403 Webshell Blocker)  │
 │   └── Anti brute-force for /wp-login.php & /xmlrpc.php                                 │
 │                                                                                        │
 │  [ Layer 2: LSAPI suEXEC Process Isolation ]                                           │
@@ -42,11 +43,11 @@ This project was built to completely resolve the two biggest problems when manag
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ Linux OS & Filesystem                                                                  │
 │                                                                                        │
-│  [ Layer 3: Linux Permissions & POSIX ACL ]                                            │
+│  [ Layer 3: Linux Permissions & Granular POSIX ACL ]                                   │
 │   ├── Dedicated User: iso_<domain> (Shell: /usr/sbin/nologin)                          │
-│   ├── Source code directory: /www/wwwroot/<domain> (Perms: 750)                        │
-│   ├── POSIX ACL: Grants read/write to 'www' (Full aaPanel WP Toolkit compatibility)    │
-│   ├── Protected wp-config.php & .env: Perms 640 (Only this site can read its DB pass)  │
+│   ├── Source code directory: /www/wwwroot/<domain> (Perms: 750, www has rx only)       │
+│   ├── Uploads directory: /wp-content/uploads (Perms: 775, www has rwx for WP Toolkit) │
+│   ├── Protected wp-config.php & .env: Perms 640, www:0 (No cross-site DB credential leak│
 │   └── PHP open_basedir: Strictly locks paths within docroot and /tmp                   │
 └────────────────────────────────────────────┬───────────────────────────────────────────┘
                                              │
@@ -72,11 +73,13 @@ This project was built to completely resolve the two biggest problems when manag
                                              │
                                              ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ Auto-Healing & Global Performance                                                      │
+│ Zero-Touch Sentinel & Global Performance                                               │
 │                                                                                        │
-│  [ Layer 6: Auto-Healer Daemon (Real-Time 503 Protection) ]                            │
-│   ├── Continuously monitors OpenLiteSpeed error logs in real-time                      │
-│   └── Automatically intercepts 503 Service Unavailable, clears sockets & repairs site │
+│  [ Layer 6: Zero-Touch Sentinel Daemon (15s Debounce & Handshake Verification) ]       │
+│   ├── Auto-detects new aaPanel websites, settles for 15s, then isolates automatically  │
+│   ├── Handshake checks eliminate race conditions during aaPanel site creation          │
+│   ├── Real-time 503 Auto-Healer clears stale sockets and restores services             │
+│   └── Rogue PHP Uploads Sanitizer quarantines unauthorized PHP files                   │
 │                                                                                        │
 │  [ Layer 7: Global PHP Tuning & OPcache JIT (PHP 8+) ]                                 │
 │   ├── Auto-activates OPcache JIT compiler (tracing, 64M) for PHP 8.0+                  │
@@ -151,23 +154,37 @@ wp-isolate clean mywebsite.com
 wp-isolate clean all
 ```
 
-### 7. Real-time auto-healing daemon (Healer)
-A background daemon continuously monitors OpenLiteSpeed error logs and automatically repairs 503 errors instantly:
+### 7. Unified Zero-Touch Sentinel Daemon
+A background daemon continuously performs 3 automated tasks:
+1. **Zero-Touch Auto-Isolation**: Detects new sites on aaPanel, waits for a 15s debounce settling window and verifies handshake to prevent race conditions during site creation.
+2. **Real-Time 503 Auto-Healer**: Automatically intercepts 503 errors and restores services.
+3. **Rogue PHP Uploads Sanitizer**: Regularly quarantines unauthorized PHP files inside uploads.
+
 ```bash
-# Check healer daemon status:
-wp-isolate healer status
+# Check sentinel daemon status:
+wp-isolate sentinel status
 
 # Enable and start daemon:
-wp-isolate healer enable
+wp-isolate sentinel enable
 
 # Disable daemon:
-wp-isolate healer disable
+wp-isolate sentinel disable
 
 # Restart daemon:
-wp-isolate healer restart
+wp-isolate sentinel restart
 ```
 
-### 8. Audit & Repair
+### 8. Malware Scan & Uploads Sanitization
+Scan docroot and uploads for rogue PHP files and suspicious `.user.ini` prepend directives:
+```bash
+# Scan a single domain:
+wp-isolate scan mywebsite.com
+
+# Scan all domains on the server:
+wp-isolate scan all
+```
+
+### 9. Audit & Repair
 If you recently edited a domain's configuration via the aaPanel UI and suspect aaPanel might have overwritten the vhost config:
 ```bash
 # Check if any website has lost its isolation configuration:

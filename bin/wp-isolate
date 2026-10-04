@@ -93,7 +93,9 @@ Core Commands:
   verify                        Audit system integrity and check for configuration drift
   repair [domain]               Re-apply isolated configuration hooks
   clean <domain|all>            Purge stale cache, broken sockets & lockfiles to resolve 503s
-  healer <enable|disable|status> Manage background auto-healer daemon for 503 recovery
+  scan <domain|all>             Scan and clean rogue PHP in uploads, inspect .user.ini
+  sentinel <enable|disable|status> Manage unified zero-touch sentinel (auto-isolation & healing)
+  healer <enable|disable|status> Alias for sentinel daemon management
 
 Options for 'isolate':
   --max-conns <num>             Max concurrent PHP workers (Default: 15)
@@ -461,18 +463,18 @@ cmd_repair() {
     fi
 }
 
-cmd_healer() {
+cmd_sentinel() {
     local action="${1:-status}"
-    local svc_file="/etc/systemd/system/wp-isolate-healer.service"
-    local bin_path="${SCRIPT_DIR}/bin/wp-isolate-healer"
-    
+    local svc_file="/etc/systemd/system/wp-isolate-sentinel.service"
+    local bin_path="${SCRIPT_DIR}/bin/wp-isolate-sentinel"
+
     chmod +x "$bin_path" 2>/dev/null || true
-    
+
     case "$action" in
         enable|start)
             cat <<EOF > "$svc_file"
 [Unit]
-Description=WP-Isolate 503 Auto-Healer Daemon
+Description=WP-Isolate Zero-Touch Sentinel Daemon
 After=network.target lsws.service
 
 [Service]
@@ -485,36 +487,134 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
-            systemctl daemon-reload
-            systemctl enable wp-isolate-healer.service
-            systemctl restart wp-isolate-healer.service
-            log_success "Auto-Healer daemon is now ENABLED and running in the background."
-            log_info "It will instantly detect 503 crashes and automatically repair them!"
-            ;;
-        disable|stop)
+            # Stop legacy healer service if present to avoid dual runners
             systemctl stop wp-isolate-healer.service 2>/dev/null || true
             systemctl disable wp-isolate-healer.service 2>/dev/null || true
+            rm -f "/etc/systemd/system/wp-isolate-healer.service" 2>/dev/null || true
+
+            systemctl daemon-reload
+            systemctl enable wp-isolate-sentinel.service
+            systemctl restart wp-isolate-sentinel.service
+            log_success "Zero-Touch Sentinel daemon is now ENABLED and active."
+            log_info "It automatically isolates new aaPanel sites (15s debounce), heals 503s, and sanitizes uploads!"
+            ;;
+        disable|stop)
+            systemctl stop wp-isolate-sentinel.service 2>/dev/null || true
+            systemctl disable wp-isolate-sentinel.service 2>/dev/null || true
             rm -f "$svc_file"
             systemctl daemon-reload
-            log_success "Auto-Healer daemon has been DISABLED."
+            log_success "Sentinel daemon has been DISABLED."
             ;;
         restart)
-            systemctl restart wp-isolate-healer.service 2>/dev/null || true
-            log_success "Auto-Healer daemon restarted."
+            systemctl restart wp-isolate-sentinel.service 2>/dev/null || true
+            log_success "Sentinel daemon restarted."
             ;;
         status)
-            if systemctl is-active --quiet wp-isolate-healer.service 2>/dev/null; then
-                log_success "Auto-Healer daemon is RUNNING."
+            if systemctl is-active --quiet wp-isolate-sentinel.service 2>/dev/null; then
+                log_success "Sentinel daemon is RUNNING."
             else
-                log_warn "Auto-Healer daemon is NOT running."
+                log_warn "Sentinel daemon is NOT running."
             fi
-            systemctl status wp-isolate-healer.service --no-pager 2>/dev/null || true
+            systemctl status wp-isolate-sentinel.service --no-pager 2>/dev/null || true
             ;;
         *)
-            log_error "Usage: wp-isolate healer [enable|disable|restart|status]"
+            log_error "Usage: wp-isolate sentinel [enable|disable|restart|status]"
             exit 1
             ;;
     esac
+}
+
+cmd_healer() {
+    # Backward compatible alias for sentinel daemon
+    cmd_sentinel "$@"
+}
+
+scan_single_domain() {
+    local target_domain="$1"
+    local vhost_file
+    vhost_file=$(detect_ols_vhost_file "$target_domain" 2>/dev/null || true)
+    local docroot
+    docroot=$(detect_vhost_docroot "$target_domain" "$vhost_file" 2>/dev/null || echo "/www/wwwroot/${target_domain}")
+
+    if [ ! -d "$docroot" ]; then
+        log_warn "Directory $docroot does not exist. Skipping $target_domain."
+        return 0
+    fi
+
+    log_info "Scanning $target_domain for potential vulnerabilities and rogue files..."
+    local found=0
+
+    # 1. Check for rogue PHP files in wp-content/uploads/
+    if [ -d "${docroot}/wp-content/uploads" ]; then
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            log_warn "MALWARE DETECTED: Rogue PHP file in uploads: $f"
+            rm -f "$f" 2>/dev/null || true
+            found=$((found + 1))
+        done < <(find "${docroot}/wp-content/uploads" -type f -name "*.php" 2>/dev/null || true)
+    fi
+
+    # 2. Check .user.ini for auto_prepend_file or auto_append_file
+    if [ -f "${docroot}/.user.ini" ]; then
+        if grep -qiE "auto_prepend_file|auto_append_file" "${docroot}/.user.ini" 2>/dev/null; then
+            log_warn "SUSPICIOUS DIRECTIVE: .user.ini contains auto_prepend_file/auto_append_file. Neutralizing..."
+            chattr -i "${docroot}/.user.ini" 2>/dev/null || true
+            sed_i -E '/auto_prepend_file/Id;/auto_append_file/Id' "${docroot}/.user.ini" 2>/dev/null || true
+            chattr +i "${docroot}/.user.ini" 2>/dev/null || true
+            found=$((found + 1))
+        fi
+    fi
+
+    # 3. Ensure .htaccess in uploads exists
+    if [ -d "${docroot}/wp-content/uploads" ]; then
+        local ht="${docroot}/wp-content/uploads/.htaccess"
+        if [ ! -f "$ht" ] || ! grep -q "WP-ISOLATE UPLOADS SHIELD" "$ht" 2>/dev/null; then
+            cat << 'HTEOF' >> "$ht"
+
+# BEGIN WP-ISOLATE UPLOADS SHIELD
+<FilesMatch "(?i)\.(php|phtml|php3|php4|php5|php7|php8|phps|inc|pl|py|cgi)$">
+Order Deny,Allow
+Deny from all
+</FilesMatch>
+# END WP-ISOLATE UPLOADS SHIELD
+HTEOF
+            chmod 644 "$ht" 2>/dev/null || true
+            log_info "Injected uploads PHP shield into $ht"
+        fi
+    fi
+
+    if [ "$found" -eq 0 ]; then
+        log_success "Scan completed for $target_domain: Clean (no rogue PHP files found)."
+    else
+        log_warn "Scan completed for $target_domain: Fixed $found issue(s)."
+    fi
+}
+
+cmd_scan() {
+    local target_domain="${1:-}"
+    if [ -z "$target_domain" ]; then
+        log_error "Usage: wp-isolate scan <domain|all>"
+        exit 1
+    fi
+
+    if [ "$target_domain" = "all" ]; then
+        log_info "Scanning all websites on server..."
+        local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+        local wwwroot_dir="${AAPANEL_WWWROOT_DIR:-/www/wwwroot}"
+
+        if [ -d "$vhost_panel_dir" ]; then
+            for f in "$vhost_panel_dir"/*.conf; do
+                [ -e "$f" ] || continue
+                local d
+                d=$(basename "$f" .conf)
+                [[ "$d" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
+                scan_single_domain "$d"
+            done
+        fi
+        log_success "Scan completed for all websites."
+    else
+        scan_single_domain "$target_domain"
+    fi
 }
 
 clean_single_domain() {
@@ -549,6 +649,11 @@ clean_single_domain() {
 
     # 4. Remove LiteSpeed socket files
     rm -f "/tmp/lshttpd/${target_domain}"* 2>/dev/null || true
+
+    # 4b. Remove any rogue PHP files from uploads directory
+    if [ -d "${docroot}/wp-content/uploads" ]; then
+        find "${docroot}/wp-content/uploads" -type f -name "*.php" -delete 2>/dev/null || true
+    fi
 
     # 5. Re-apply permissions and vhost configuration
     local user
@@ -694,6 +799,8 @@ case "$ACTION" in
     verify)      cmd_verify "$@" ;;
     repair)      cmd_repair "$@" ;;
     clean)       cmd_clean "$@" ;;
+    scan)        cmd_scan "$@" ;;
+    sentinel)    cmd_sentinel "$@" ;;
     healer)      cmd_healer "$@" ;;
     help|--help|-h) cmd_help ;;
     *)

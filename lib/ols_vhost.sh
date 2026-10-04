@@ -121,7 +121,7 @@ setUIDMode 2" "$outer_file" 2>/dev/null || true
         sed_i -E "s/^[[:space:]]*procSoftLimit[[:space:]]+[0-9]+/  procSoftLimit           ${proc_soft}/" "$detail_file"
         sed_i -E "s/^[[:space:]]*procHardLimit[[:space:]]+[0-9]+/  procHardLimit           ${proc_hard}/" "$detail_file"
 
-        # Append Throttling Block
+        # Append Throttling Block & Native Anti-Malware Uploads Protection
         remove_ols_include "$domain" "$detail_file"
         cat << EOF >> "$detail_file"
 
@@ -131,6 +131,14 @@ dynReqPerSec ${req_limit}
 outBandwidth 0
 inBandwidth 0
 blockBadReq 1
+
+rewrite  {
+  enable                  1
+  autoLoadHtaccess        1
+  rules                   <<<END_RULES
+RewriteRule ^wp-content/uploads/.*\.php$ - [F,L]
+END_RULES
+}
 
 phpIniOverride {
   php_value open_basedir "${docroot}/:/tmp/:/dev/urandom"
@@ -143,6 +151,24 @@ phpIniOverride {
 ### END WP-ISOLATE: ${domain} ###
 EOF
         log_success "Configured suEXEC user and resource limits in $detail_file."
+
+        # Double protection: Place .htaccess shield inside wp-content/uploads if directory exists
+        if [ -d "${docroot}/wp-content/uploads" ]; then
+            local htaccess="${docroot}/wp-content/uploads/.htaccess"
+            if [ ! -f "$htaccess" ] || ! grep -q "WP-ISOLATE UPLOADS SHIELD" "$htaccess" 2>/dev/null; then
+                cat << 'HTEOF' >> "$htaccess"
+
+# BEGIN WP-ISOLATE UPLOADS SHIELD
+<FilesMatch "(?i)\.(php|phtml|php3|php4|php5|php7|php8|phps|inc|pl|py|cgi)$">
+Order Deny,Allow
+Deny from all
+</FilesMatch>
+# END WP-ISOLATE UPLOADS SHIELD
+HTEOF
+                chmod 644 "$htaccess" 2>/dev/null || true
+                log_info "Protected wp-content/uploads with .htaccess PHP execution shield."
+            fi
+        fi
     fi
 
     # 3. Clean any legacy include from outer_file

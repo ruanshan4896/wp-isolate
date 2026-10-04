@@ -59,10 +59,21 @@ apply_site_permissions() {
         chattr +i "$docroot/.user.ini" 2>/dev/null || true
     fi
 
-    # Allow aaPanel OLS web worker (www) read access to static assets via POSIX ACL
+    # Allow aaPanel OLS web worker (www) read/traverse access to static assets via POSIX ACL
+    # Note: Do NOT grant write (w) to docroot or code files to prevent cross-site tampering!
     if command -v setfacl >/dev/null 2>&1; then
-        setfacl -R -m u:www:rwx "$docroot" 2>/dev/null || true
-        setfacl -R -d -m u:www:rwx "$docroot" 2>/dev/null || true
+        setfacl -R -m u:www:rx "$docroot" 2>/dev/null || true
+        setfacl -R -d -m u:www:rx "$docroot" 2>/dev/null || true
+    fi
+
+    # Grant write access strictly to wp-content/uploads (if it exists) so aaPanel WP Toolkit / File Manager can manage media
+    local uploads_dir="$docroot/wp-content/uploads"
+    if [ -d "$uploads_dir" ]; then
+        chmod 775 "$uploads_dir" 2>/dev/null || true
+        if command -v setfacl >/dev/null 2>&1; then
+            setfacl -R -m u:www:rwx "$uploads_dir" 2>/dev/null || true
+            setfacl -R -d -m u:www:rwx "$uploads_dir" 2>/dev/null || true
+        fi
     fi
 
     # Restrict sensitive config files (wp-config.php, .env)
@@ -104,10 +115,11 @@ if ( ! defined( 'WP_MEMORY_LIMIT' ) ) {
                 chown "${user}:${user}" "$conf_file"
             fi
             chmod 640 "$conf_file"
+            # Forbid other users (including www worker) from reading DB credentials directly
             if command -v setfacl >/dev/null 2>&1; then
-                setfacl -m u:www:rw "$conf_file" 2>/dev/null || true
+                setfacl -m u:www:0 "$conf_file" 2>/dev/null || true
             fi
-            log_info "Secured configuration file: $conf_file (640, isolated from other users, readable/writable by www)"
+            log_info "Secured configuration file: $conf_file (640, isolated from other users and www)"
         fi
     done
     log_success "Permissions applied successfully."

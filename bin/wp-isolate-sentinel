@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# bin/wp-isolate-sentinel - Unified Background Sentinel for wp-isolate
+# Features:
+# 1. Zero-Touch Auto-Isolation with 15s Debounce & Handshake Verification
+# 2. Real-time 503 Auto-Healer Daemon
+# 3. Rogue PHP Uploads Sanitizer
+set -eu
+set -o pipefail 2>/dev/null || true
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ ! -d "${SCRIPT_DIR}/lib" ] && [ -d "/opt/wp-isolate/lib" ]; then
+    SCRIPT_DIR="/opt/wp-isolate"
+fi
+
+# Dynamically resolve wp-isolate binary
+if command -v wp-isolate >/dev/null 2>&1; then
+    ISOLATE_CMD="wp-isolate"
+elif [ -x "${SCRIPT_DIR}/bin/wp-isolate" ]; then
+    ISOLATE_CMD="${SCRIPT_DIR}/bin/wp-isolate"
+else
+    ISOLATE_CMD="/usr/local/bin/wp-isolate"
+fi
+
+OLS_VHOST_DIR="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+OLS_LOG_FILE="/usr/local/lsws/logs/error.log"
+DEBOUNCE_SECONDS=15
+SETTLE_STATE_DIR="/tmp/wp_isolate_sentinel"
+mkdir -p "$SETTLE_STATE_DIR"
+
+log_sentinel() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SENTINEL] $*"
+}
+
+# -------------------------------------------------------------
+# Component 1: Handshake Verification (Prevent aaPanel Conflicts)
+# -------------------------------------------------------------
+is_aapanel_site_ready() {
+    local domain="$1"
+    local outer_file="${OLS_VHOST_DIR}/${domain}.conf"
+    local detail_file="${OLS_VHOST_DIR}/detail/${domain}.conf"
+    local docroot="/www/wwwroot/${domain}"
+
+    # 1. File existence and non-zero size
+    if [ ! -s "$outer_file" ] || [ ! -s "$detail_file" ]; then
+        return 1
+    fi
+
+    # 2. Check outer file virtualhost block is closed with brace
+    if ! grep -q "virtualhost[[:space:]]\+${domain}" "$outer_file" 2>/dev/null || ! grep -q "}" "$outer_file" 2>/dev/null; then
+        return 1
+    fi
+
+    # 3. Check detail file defines extprocessor
+    if ! grep -q "extprocessor[[:space:]]\+lsphp" "$detail_file" 2>/dev/null; then
+        return 1
+    fi
+
+    # 4. Check docroot directory exists
+    if [ ! -d "$docroot" ]; then
+        return 1
+    fi
+
+    # 5. Check if aaPanel python daemon is currently writing to the vhost files
+    if command -v fuser >/dev/null 2>&1; then
+        if fuser "$outer_file" "$detail_file" >/dev/null 2>&1; then
+            return 1
+        fi
+    fi
+
+    # 6. Check OpenLiteSpeed syntax test passes
+    local test_bin=""
+    for b in "/usr/local/lsws/bin/openlitespeed" "/usr/local/lsws/bin/lshttpd"; do
+        if [ -x "$b" ]; then
+            test_bin="$b"
+            break
+        fi
+    done
+    if [ -n "$test_bin" ]; then
+        if ! "$test_bin" -t >/dev/null 2>&1; then
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# -------------------------------------------------------------
+# Component 2: Zero-Touch Auto-Isolation Loop (Debounce Engine)
+# -------------------------------------------------------------
+run_auto_isolation_monitor() {
+    log_sentinel "Started Auto-Isolation Monitor (Debounce: ${DEBOUNCE_SECONDS}s)..."
+
+    while true; do
+        if [ -d "$OLS_VHOST_DIR" ]; then
+            for f in "$OLS_VHOST_DIR"/*.conf; do
+                [ -e "$f" ] || continue
+                local domain
+                domain=$(basename "$f" .conf)
+                [[ "$domain" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
+
+                local detail_file="${OLS_VHOST_DIR}/detail/${domain}.conf"
+
+                # Check if already isolated
+                local is_isolated=false
+                if [ -f "$detail_file" ] && grep -qE "^\s*extUser\s+iso_" "$detail_file" 2>/dev/null && grep -q "setUIDMode 2" "$f" 2>/dev/null; then
+                    is_isolated=true
+                fi
+
+                if [ "$is_isolated" = false ]; then
+                    local now
+                    now=$(date +%s)
+                    local last_mod
+                    # Cross-platform stat for mtime (Linux vs BSD/macOS)
+                    if stat -c %Y "$f" >/dev/null 2>&1; then
+                        last_mod=$(stat -c %Y "$f")
+                    else
+                        last_mod=$(stat -f %m "$f" 2>/dev/null || echo "$now")
+                    fi
+
+                    local elapsed=$((now - last_mod))
+                    local tracking_file="${SETTLE_STATE_DIR}/${domain}.pending"
+
+                    if [ "$elapsed" -lt "$DEBOUNCE_SECONDS" ]; then
+                        if [ ! -f "$tracking_file" ]; then
+                            touch "$tracking_file"
+                            log_sentinel "New site detected: ${domain}. Waiting for aaPanel creation to settle (countdown ${DEBOUNCE_SECONDS}s)..."
+                        fi
+                    else
+                        # File has settled for > 15 seconds. Verify handshake before isolating!
+                        if is_aapanel_site_ready "$domain"; then
+                            log_sentinel "Handshake verified for ${domain}! aaPanel has finished site creation. Executing isolation now..."
+                            rm -f "$tracking_file"
+                            
+                            # Execute isolation cleanly
+                            if "$ISOLATE_CMD" isolate "$domain" >> "${SETTLE_STATE_DIR}/${domain}.log" 2>&1; then
+                                log_sentinel "SUCCESS: Website ${domain} is now fully ISOLATED!"
+                            else
+                                log_sentinel "WARNING: Failed to isolate ${domain}. Will retry on next cycle."
+                            fi
+                        else
+                            log_sentinel "Waiting: ${domain} files still settling or aaPanel operation in progress..."
+                        fi
+                    fi
+                else
+                    rm -f "${SETTLE_STATE_DIR}/${domain}.pending" 2>/dev/null || true
+                fi
+            done
+        fi
+        sleep 5
+    done
+}
+
+# -------------------------------------------------------------
+# Component 3: Real-Time 503 Auto-Healer Worker
+# -------------------------------------------------------------
+run_503_healer_worker() {
+    if [ ! -f "$OLS_LOG_FILE" ]; then
+        mkdir -p "$(dirname "$OLS_LOG_FILE")" 2>/dev/null || true
+        touch "$OLS_LOG_FILE" 2>/dev/null || true
+    fi
+
+    log_sentinel "Started 503 Auto-Healer Log Tailer on $OLS_LOG_FILE..."
+
+    tail -F "$OLS_LOG_FILE" 2>/dev/null | while read -r line; do
+        if echo "$line" | grep -q "oops! 503 Service Unavailable"; then
+            local domain
+            domain=$(echo "$line" | sed -n 's/.*#\([^]]*\)\].*/\1/p')
+            if [ -n "$domain" ]; then
+                local lock_file="/tmp/wp_isolate_healer_${domain}.lock"
+                if [ ! -f "$lock_file" ]; then
+                    touch "$lock_file"
+                    log_sentinel "Detected 503 on $domain. Initiating auto-healing..."
+                    (
+                        "$ISOLATE_CMD" clean "$domain" > "/tmp/wp_isolate_healer_${domain}.log" 2>&1 || true
+                        sleep 60
+                        rm -f "$lock_file"
+                    ) &
+                fi
+            fi
+        fi
+    done
+}
+
+# -------------------------------------------------------------
+# Component 4: Rogue PHP Uploads Sanitizer
+# -------------------------------------------------------------
+run_uploads_sanitizer() {
+    log_sentinel "Started Rogue PHP Uploads Sanitizer (Runs every 10 minutes)..."
+    while true; do
+        sleep 600
+        if [ -d "/www/wwwroot" ]; then
+            for upl in /www/wwwroot/*/wp-content/uploads; do
+                [ -d "$upl" ] || continue
+                # Find any .php file inside uploads and quarantine it
+                while IFS= read -r php_file; do
+                    [ -n "$php_file" ] || continue
+                    local qdir="/tmp/wp_isolate_quarantine"
+                    mkdir -p "$qdir"
+                    log_sentinel "MALWARE ALERT: Detected rogue PHP file in uploads: $php_file. Quarantining!"
+                    mv "$php_file" "${qdir}/$(basename "$php_file").$(date +%s).quarantine" 2>/dev/null || rm -f "$php_file" 2>/dev/null || true
+                done < <(find "$upl" -type f -name "*.php" 2>/dev/null || true)
+            done
+        fi
+    done
+}
+
+# -------------------------------------------------------------
+# Main Daemon Supervisor
+# -------------------------------------------------------------
+log_sentinel "Initializing wp-isolate Sentinel Supervisor..."
+
+# Trap signals for graceful shutdown
+trap 'log_sentinel "Stopping wp-isolate sentinel..."; kill $(jobs -p) 2>/dev/null || true; exit 0' SIGTERM SIGINT
+
+# Start background workers
+run_503_healer_worker &
+run_uploads_sanitizer &
+
+# Run auto-isolation monitor on main foreground loop
+run_auto_isolation_monitor
