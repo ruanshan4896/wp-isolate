@@ -273,10 +273,8 @@ apply_wp_redis_config() {
         chmod 640 "$wp_config" 2>/dev/null || true
     fi
 
-    # Inject right after <?php line
-    local block
-    if [ -d "$docroot/wp-content/plugins/litespeed-cache" ]; then
-        block=$(cat << EOF
+    # Inject right after <?php line (Universal: Supports both LiteSpeed Cache & Till Krüss / Pantheon)
+    local block=$(cat << EOF
 
 /* BEGIN WP-ISOLATE REDIS */
 // LiteSpeed Cache (LSCWP) Native Object Cache Overrides
@@ -298,13 +296,7 @@ if ( ! defined( 'LITESPEED_CONF__OBJECT__DB_ID' ) ) {
 if ( ! defined( 'LITESPEED_CONF__OBJECT__KEY_PREFIX' ) ) {
     define( 'LITESPEED_CONF__OBJECT__KEY_PREFIX', '${clean_prefix}' );
 }
-/* END WP-ISOLATE REDIS */
-EOF
-)
-    else
-        block=$(cat << EOF
 
-/* BEGIN WP-ISOLATE REDIS */
 // Standard Redis Object Cache (Till Krüss / Pantheon)
 if ( ! defined( 'WP_REDIS_DATABASE' ) ) {
     define( 'WP_REDIS_DATABASE', ${db_id} );
@@ -315,7 +307,6 @@ if ( ! defined( 'WP_CACHE_KEY_SALT' ) ) {
 /* END WP-ISOLATE REDIS */
 EOF
 )
-    fi
 
     # Inject right after first line
     {
@@ -332,7 +323,7 @@ EOF
     fi
     chmod 640 "$wp_config" 2>/dev/null || true
     if command -v setfacl >/dev/null 2>&1; then
-        setfacl -m u:www:rw "$wp_config" 2>/dev/null || true
+        setfacl -m u:www:0 "$wp_config" 2>/dev/null || true
     fi
 
     log_success "Redis cache configuration injected into $wp_config."
