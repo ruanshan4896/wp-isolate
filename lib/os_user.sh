@@ -59,11 +59,13 @@ apply_site_permissions() {
         chattr +i "$docroot/.user.ini" 2>/dev/null || true
     fi
 
-    # Allow aaPanel OLS web worker & WP Toolkit (www) access via POSIX ACL
+    # Allow aaPanel OLS web worker & WP Toolkit (www) and site user (iso_<domain>) bidirectional access via POSIX ACL
     # Dedicated site user (iso_<domain>) owns the files (750 / 640), keeping other sites (iso_siteB) completely locked out.
     if command -v setfacl >/dev/null 2>&1; then
         setfacl -R -m u:www:rwx "$docroot" 2>/dev/null || true
         setfacl -R -d -m u:www:rwx "$docroot" 2>/dev/null || true
+        setfacl -R -m u:"${user}":rwx "$docroot" 2>/dev/null || true
+        setfacl -R -d -m u:"${user}":rwx "$docroot" 2>/dev/null || true
     fi
 
     # Restrict sensitive config files (wp-config.php, .env)

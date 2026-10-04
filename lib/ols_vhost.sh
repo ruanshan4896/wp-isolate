@@ -105,21 +105,82 @@ isolate_ols_vhost() {
         if grep -q "setUIDMode" "$outer_file"; then
             sed_i -E "s/setUIDMode[[:space:]]+[0-9]+/setUIDMode 2/" "$outer_file"
         else
-            sed_i "/virtualhost[[:space:]]\+${domain}[[:space:]]\+{/a\\
-setUIDMode 2" "$outer_file" 2>/dev/null || true
+            awk -v domain="$domain" '{
+                print $0
+                if ($0 ~ /^[[:space:]]*virtualhost[[:space:]]+/) {
+                    print "  setUIDMode 2"
+                }
+            }' "$outer_file" > "${outer_file}.tmp" && mv "${outer_file}.tmp" "$outer_file"
         fi
         log_info "Configured suEXEC (setUIDMode 2) in $outer_file"
     fi
 
     # 2. Update detail file (where aaPanel defines extprocessor)
     if [ -f "$detail_file" ]; then
-        sed_i -E "s/^[[:space:]]*extUser[[:space:]]+.*/  extUser                 ${user}/" "$detail_file"
-        sed_i -E "s/^[[:space:]]*extGroup[[:space:]]+.*/  extGroup                ${user}/" "$detail_file"
-        sed_i -E "s/^[[:space:]]*maxConns[[:space:]]+[0-9]+/  maxConns                ${max_conns}/" "$detail_file"
-        sed_i -E "s/^[[:space:]]*memSoftLimit[[:space:]]+[0-9]+M?/  memSoftLimit            ${mem_soft}/" "$detail_file"
-        sed_i -E "s/^[[:space:]]*memHardLimit[[:space:]]+[0-9]+M?/  memHardLimit            ${mem_hard}/" "$detail_file"
-        sed_i -E "s/^[[:space:]]*procSoftLimit[[:space:]]+[0-9]+/  procSoftLimit           ${proc_soft}/" "$detail_file"
-        sed_i -E "s/^[[:space:]]*procHardLimit[[:space:]]+[0-9]+/  procHardLimit           ${proc_hard}/" "$detail_file"
+        # Ensure /tmp/lshttpd directory has sticky permissions so isolated user can bind domain sockets
+        if [ -d "/tmp/lshttpd" ]; then
+            chmod 1777 /tmp/lshttpd 2>/dev/null || true
+            rm -f "/tmp/lshttpd/${domain}.sock"* 2>/dev/null || true
+            rm -f "/tmp/lshttpd/"*"${domain}"* 2>/dev/null || true
+        fi
+
+        if grep -qE "^[[:space:]]*extprocessor[[:space:]]+" "$detail_file"; then
+            awk -v user="$user" -v max_conns="$max_conns" -v mem_soft="$mem_soft" -v mem_hard="$mem_hard" -v proc_soft="$proc_soft" -v proc_hard="$proc_hard" '{
+                if ($0 ~ /^[[:space:]]*extUser[[:space:]]+/) next
+                if ($0 ~ /^[[:space:]]*extGroup[[:space:]]+/) next
+                if ($0 ~ /^[[:space:]]*maxConns[[:space:]]+/) next
+                if ($0 ~ /^[[:space:]]*memSoftLimit[[:space:]]+/) next
+                if ($0 ~ /^[[:space:]]*memHardLimit[[:space:]]+/) next
+                if ($0 ~ /^[[:space:]]*procSoftLimit[[:space:]]+/) next
+                if ($0 ~ /^[[:space:]]*procHardLimit[[:space:]]+/) next
+                print $0
+                if ($0 ~ /^[[:space:]]*extprocessor[[:space:]]+.*{/) {
+                    print "  extUser                 " user
+                    print "  extGroup                " user
+                    print "  maxConns                " max_conns
+                    print "  memSoftLimit            " mem_soft
+                    print "  memHardLimit            " mem_hard
+                    print "  procSoftLimit           " proc_soft
+                    print "  procHardLimit           " proc_hard
+                }
+            }' "$detail_file" > "${detail_file}.tmp" && mv "${detail_file}.tmp" "$detail_file"
+        else
+            if grep -qE "^[[:space:]]*extUser[[:space:]]+" "$detail_file"; then
+                sed_i -E "s/^[[:space:]]*extUser[[:space:]]+.*/  extUser                 ${user}/" "$detail_file"
+            else
+                echo "  extUser                 ${user}" >> "$detail_file"
+            fi
+            if grep -qE "^[[:space:]]*extGroup[[:space:]]+" "$detail_file"; then
+                sed_i -E "s/^[[:space:]]*extGroup[[:space:]]+.*/  extGroup                ${user}/" "$detail_file"
+            else
+                echo "  extGroup                ${user}" >> "$detail_file"
+            fi
+            if grep -qE "^[[:space:]]*maxConns[[:space:]]+" "$detail_file"; then
+                sed_i -E "s/^[[:space:]]*maxConns[[:space:]]+[0-9]+/  maxConns                ${max_conns}/" "$detail_file"
+            else
+                echo "  maxConns                ${max_conns}" >> "$detail_file"
+            fi
+            if grep -qE "^[[:space:]]*memSoftLimit[[:space:]]+" "$detail_file"; then
+                sed_i -E "s/^[[:space:]]*memSoftLimit[[:space:]]+[0-9]+M?/  memSoftLimit            ${mem_soft}/" "$detail_file"
+            else
+                echo "  memSoftLimit            ${mem_soft}" >> "$detail_file"
+            fi
+            if grep -qE "^[[:space:]]*memHardLimit[[:space:]]+" "$detail_file"; then
+                sed_i -E "s/^[[:space:]]*memHardLimit[[:space:]]+[0-9]+M?/  memHardLimit            ${mem_hard}/" "$detail_file"
+            else
+                echo "  memHardLimit            ${mem_hard}" >> "$detail_file"
+            fi
+            if grep -qE "^[[:space:]]*procSoftLimit[[:space:]]+" "$detail_file"; then
+                sed_i -E "s/^[[:space:]]*procSoftLimit[[:space:]]+[0-9]+/  procSoftLimit           ${proc_soft}/" "$detail_file"
+            else
+                echo "  procSoftLimit           ${proc_soft}" >> "$detail_file"
+            fi
+            if grep -qE "^[[:space:]]*procHardLimit[[:space:]]+" "$detail_file"; then
+                sed_i -E "s/^[[:space:]]*procHardLimit[[:space:]]+[0-9]+/  procHardLimit           ${proc_hard}/" "$detail_file"
+            else
+                echo "  procHardLimit           ${proc_hard}" >> "$detail_file"
+            fi
+        fi
 
         # Append Throttling Block & Native Anti-Malware Uploads Protection
         remove_ols_include "$domain" "$detail_file"
@@ -141,7 +202,7 @@ END_RULES
 }
 
 phpIniOverride {
-  php_value open_basedir "${docroot}/:/tmp/:/dev/urandom"
+  php_value open_basedir "${docroot}/:/tmp/:/dev/urandom:/proc/"
   php_value session.save_path "/tmp"
   php_value upload_tmp_dir "/tmp"
   php_value max_execution_time 300
@@ -189,8 +250,24 @@ restore_ols_vhost() {
     fi
 
     if [ -f "$detail_file" ]; then
-        sed_i -E "s/^[[:space:]]*extUser[[:space:]]+.*/  extUser                 www/" "$detail_file"
-        sed_i -E "s/^[[:space:]]*extGroup[[:space:]]+.*/  extGroup                www/" "$detail_file"
+        if grep -qE "^[[:space:]]*extprocessor[[:space:]]+" "$detail_file"; then
+            awk '{
+                if ($0 ~ /^[[:space:]]*extUser[[:space:]]+/) next
+                if ($0 ~ /^[[:space:]]*extGroup[[:space:]]+/) next
+                if ($0 ~ /^[[:space:]]*memSoftLimit[[:space:]]+/) next
+                if ($0 ~ /^[[:space:]]*memHardLimit[[:space:]]+/) next
+                if ($0 ~ /^[[:space:]]*procSoftLimit[[:space:]]+/) next
+                if ($0 ~ /^[[:space:]]*procHardLimit[[:space:]]+/) next
+                print $0
+                if ($0 ~ /^[[:space:]]*extprocessor[[:space:]]+.*{/) {
+                    print "  extUser                 www"
+                    print "  extGroup                www"
+                }
+            }' "$detail_file" > "${detail_file}.tmp" && mv "${detail_file}.tmp" "$detail_file"
+        else
+            sed_i -E "s/^[[:space:]]*extUser[[:space:]]+.*/  extUser                 www/" "$detail_file"
+            sed_i -E "s/^[[:space:]]*extGroup[[:space:]]+.*/  extGroup                www/" "$detail_file"
+        fi
         remove_ols_include "$domain" "$detail_file"
     fi
 }
@@ -222,8 +299,8 @@ verify_and_reload_ols() {
     elif command -v systemctl >/dev/null 2>&1; then
         systemctl restart lsws 2>/dev/null || systemctl reload lsws 2>/dev/null || true
     fi
-    # Terminate any old www workers so new workers spawn under the isolated user
-    pkill -u www -f lsphp 2>/dev/null || true
+    # Force termination of old lsphp worker processes so OpenLiteSpeed respawns workers under the new isolated user UID
+    pkill -9 -f lsphp 2>/dev/null || true
     log_success "OpenLiteSpeed reloaded."
     return 0
 }
