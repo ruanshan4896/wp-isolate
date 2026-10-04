@@ -29,7 +29,7 @@ source "${SCRIPT_DIR}/lib/redis_isolate.sh"
 OLS_VHOST_DIR="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
 OLS_LOG_FILE="/usr/local/lsws/logs/error.log"
 SENTINEL_LOG_FILE="/var/log/wp-isolate-sentinel.log"
-DEBOUNCE_SECONDS=15
+DEBOUNCE_SECONDS=45
 SETTLE_STATE_DIR="/tmp/wp_isolate_sentinel"
 mkdir -p "$SETTLE_STATE_DIR"
 
