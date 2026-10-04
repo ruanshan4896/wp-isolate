@@ -21,14 +21,21 @@ else
     ISOLATE_CMD="/usr/local/bin/wp-isolate"
 fi
 
+source "${SCRIPT_DIR}/lib/common.sh"
+source "${SCRIPT_DIR}/lib/os_user.sh"
+source "${SCRIPT_DIR}/lib/ols_vhost.sh"
+
 OLS_VHOST_DIR="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
 OLS_LOG_FILE="/usr/local/lsws/logs/error.log"
+SENTINEL_LOG_FILE="/var/log/wp-isolate-sentinel.log"
 DEBOUNCE_SECONDS=15
 SETTLE_STATE_DIR="/tmp/wp_isolate_sentinel"
 mkdir -p "$SETTLE_STATE_DIR"
 
 log_sentinel() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SENTINEL] $*"
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] [SENTINEL] $*"
+    echo "$msg"
+    echo "$msg" >> "$SENTINEL_LOG_FILE" 2>/dev/null || true
 }
 
 # -------------------------------------------------------------
@@ -37,37 +44,25 @@ log_sentinel() {
 is_aapanel_site_ready() {
     local domain="$1"
     local outer_file="${OLS_VHOST_DIR}/${domain}.conf"
-    local detail_file="${OLS_VHOST_DIR}/detail/${domain}.conf"
-    local docroot="/www/wwwroot/${domain}"
+    local docroot
+    docroot=$(detect_vhost_docroot "$domain" "$outer_file" 2>/dev/null || echo "/www/wwwroot/${domain}")
 
-    # 1. File existence and non-zero size
-    if [ ! -s "$outer_file" ] || [ ! -s "$detail_file" ]; then
+    # 1. Outer file must exist and have content
+    if [ ! -s "$outer_file" ]; then
         return 1
     fi
 
-    # 2. Check outer file virtualhost block is closed with brace
-    if ! grep -q "virtualhost[[:space:]]\+${domain}" "$outer_file" 2>/dev/null || ! grep -q "}" "$outer_file" 2>/dev/null; then
+    # 2. Check outer file defines virtualhost
+    if ! grep -q "virtualhost" "$outer_file" 2>/dev/null; then
         return 1
     fi
 
-    # 3. Check detail file defines extprocessor
-    if ! grep -q "extprocessor[[:space:]]\+lsphp" "$detail_file" 2>/dev/null; then
-        return 1
-    fi
-
-    # 4. Check docroot directory exists
+    # 3. Check docroot directory exists
     if [ ! -d "$docroot" ]; then
         return 1
     fi
 
-    # 5. Check if aaPanel python daemon is currently writing to the vhost files
-    if command -v fuser >/dev/null 2>&1; then
-        if fuser "$outer_file" "$detail_file" >/dev/null 2>&1; then
-            return 1
-        fi
-    fi
-
-    # 6. Check OpenLiteSpeed syntax test passes
+    # 4. Check OpenLiteSpeed syntax for ERROR or FATAL (ignoring harmless warnings)
     local test_bin=""
     for b in "/usr/local/lsws/bin/openlitespeed" "/usr/local/lsws/bin/lshttpd"; do
         if [ -x "$b" ]; then
@@ -76,7 +71,9 @@ is_aapanel_site_ready() {
         fi
     done
     if [ -n "$test_bin" ]; then
-        if ! "$test_bin" -t >/dev/null 2>&1; then
+        local test_out
+        test_out=$("$test_bin" -t 2>&1 || true)
+        if echo "$test_out" | grep -qE "\[ERROR\]|\[FATAL\]"; then
             return 1
         fi
     fi
@@ -85,7 +82,7 @@ is_aapanel_site_ready() {
 }
 
 # -------------------------------------------------------------
-# Component 2: Zero-Touch Auto-Isolation Loop (Debounce Engine)
+# Component 2: Zero-Touch Auto-Isolation & Drift Monitor
 # -------------------------------------------------------------
 run_auto_isolation_monitor() {
     log_sentinel "Started Auto-Isolation Monitor (Debounce: ${DEBOUNCE_SECONDS}s)..."
@@ -99,14 +96,41 @@ run_auto_isolation_monitor() {
                 [[ "$domain" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
 
                 local detail_file="${OLS_VHOST_DIR}/detail/${domain}.conf"
+                local expected_user
+                expected_user=$(sanitize_domain_to_user "$domain")
+                local docroot
+                docroot=$(detect_vhost_docroot "$domain" "$f" 2>/dev/null || echo "/www/wwwroot/${domain}")
 
-                # Check if already isolated
-                local is_isolated=false
+                # Check if vhost is isolated
+                local is_vhost_isolated=false
                 if [ -f "$detail_file" ] && grep -qE "^\s*extUser\s+iso_" "$detail_file" 2>/dev/null && grep -q "setUIDMode 2" "$f" 2>/dev/null; then
-                    is_isolated=true
+                    is_vhost_isolated=true
                 fi
 
-                if [ "$is_isolated" = false ]; then
+                # Check if filesystem permissions are isolated
+                local is_perms_isolated=false
+                if [ -d "$docroot" ]; then
+                    local current_owner=""
+                    if stat -c %U "$docroot" >/dev/null 2>&1; then
+                        current_owner=$(stat -c %U "$docroot")
+                    else
+                        current_owner=$(stat -f %Su "$docroot" 2>/dev/null || echo "")
+                    fi
+                    if [ "$current_owner" = "$expected_user" ]; then
+                        is_perms_isolated=true
+                    fi
+                fi
+
+                # Case A: Vhost is isolated, but aaPanel WP Toolkit reset docroot to www:www (Drift Repair)
+                if [ "$is_vhost_isolated" = true ] && [ "$is_perms_isolated" = false ] && [ -d "$docroot" ]; then
+                    log_sentinel "Permission drift detected on ${domain} (likely reset by WP Toolkit). Restoring isolated permissions for ${expected_user}..."
+                    apply_site_permissions "$domain" "$docroot"
+                    log_sentinel "SUCCESS: Re-applied isolated permissions on ${domain}!"
+                    continue
+                fi
+
+                # Case B: Vhost is NOT yet isolated
+                if [ "$is_vhost_isolated" = false ]; then
                     local now
                     now=$(date +%s)
                     local last_mod
