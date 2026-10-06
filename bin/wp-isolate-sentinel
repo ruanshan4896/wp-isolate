@@ -24,7 +24,6 @@ fi
 source "${SCRIPT_DIR}/lib/common.sh"
 source "${SCRIPT_DIR}/lib/os_user.sh"
 source "${SCRIPT_DIR}/lib/ols_vhost.sh"
-source "${SCRIPT_DIR}/lib/redis_isolate.sh"
 
 OLS_VHOST_DIR="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
 OLS_LOG_FILE="/usr/local/lsws/logs/error.log"
@@ -128,22 +127,6 @@ run_auto_isolation_monitor() {
                     apply_site_permissions "$domain" "$docroot"
                     log_sentinel "SUCCESS: Re-applied isolated permissions on ${domain}!"
                     continue
-                fi
-
-                # Case C: Site is isolated, but LiteSpeed Cache was restored/installed without object-cache dropin or .litespeed_conf.dat
-                if [ "$is_vhost_isolated" = true ] && [ -d "$docroot/wp-content/plugins/litespeed-cache" ] && [ -f "$docroot/wp-config.php" ]; then
-                    if [ ! -f "$docroot/wp-content/.litespeed_conf.dat" ] || ! grep -q "LITESPEED_CONF__OBJECT__DB_ID" "$docroot/wp-config.php" 2>/dev/null; then
-                        local assigned_db
-                        assigned_db=$(get_existing_wp_redis_db "$domain" "$docroot" 2>/dev/null || true)
-                        if [ -z "$assigned_db" ]; then
-                            assigned_db=$(get_next_available_redis_db 2>/dev/null || echo "")
-                        fi
-                        if [ -n "$assigned_db" ]; then
-                            log_sentinel "Restored LiteSpeed Cache detected on ${domain}. Auto-synchronizing Object Cache settings for Redis DB ${assigned_db}..."
-                            apply_wp_redis_config "$domain" "$docroot" "$assigned_db"
-                            log_sentinel "SUCCESS: LiteSpeed Cache synchronized for ${domain} on Redis DB ${assigned_db}!"
-                        fi
-                    fi
                 fi
 
                 # Case B: Vhost is NOT yet isolated
