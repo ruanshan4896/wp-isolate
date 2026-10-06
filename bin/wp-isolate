@@ -277,7 +277,7 @@ cmd_isolate() {
     # Step 6: Configure Redis Cache Isolation
     local redis_db=""
     if [ "$enable_redis" = true ] && ([ -f "$docroot/wp-config.php" ] || is_redis_available); then
-        ensure_redis_databases 64
+        ensure_redis_databases 256
         if [ -n "$custom_redis_db" ]; then
             redis_db="$custom_redis_db"
         else
@@ -438,25 +438,56 @@ cmd_verify() {
 
 cmd_repair() {
     local target_domain="${1:-}"
+    ensure_redis_databases 256
     if [ -n "$target_domain" ]; then
         local user
         user=$(get_site_user "$target_domain")
         local docroot="/www/wwwroot/${target_domain}"
         isolate_ols_vhost "$target_domain" "$user" 15 "512M" 10 "$docroot"
         apply_site_permissions "$target_domain" "$docroot"
+        local r_db
+        r_db=$(extract_wp_redis_db "$docroot/wp-config.php" 2>/dev/null || true)
+        if [ -n "$r_db" ]; then
+            apply_wp_redis_config "$target_domain" "$docroot" "$r_db"
+        fi
         verify_and_reload_ols
         log_success "Repaired $target_domain."
     else
         log_info "Repairing all isolated websites..."
-        for d in "$VHOSTS_DIR"/*; do
-            [ -d "$d" ] || continue
-            local domain
-            domain=$(basename "$d")
+        local domains=()
+        local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+        local wwwroot_dir="${AAPANEL_WWWROOT_DIR:-/www/wwwroot}"
+
+        if [ -d "$vhost_panel_dir" ]; then
+            for f in "$vhost_panel_dir"/*.conf; do
+                [ -e "$f" ] || continue
+                local d
+                d=$(basename "$f" .conf)
+                [[ "$d" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
+                domains+=("$d")
+            done
+        fi
+        if [ ${#domains[@]} -eq 0 ] && [ -d "$wwwroot_dir" ]; then
+            for d in "$wwwroot_dir"/*; do
+                [ -d "$d" ] || continue
+                local name
+                name=$(basename "$d")
+                [[ "$name" =~ ^(default|phpmyadmin)$ ]] && continue
+                domains+=("$name")
+            done
+        fi
+
+        for domain in "${domains[@]}"; do
             local user
             user=$(get_site_user "$domain")
-            local docroot="/www/wwwroot/${domain}"
+            local docroot="${wwwroot_dir}/${domain}"
             isolate_ols_vhost "$domain" "$user" 15 "512M" 10 "$docroot"
             apply_site_permissions "$domain" "$docroot"
+            local r_db
+            r_db=$(extract_wp_redis_db "$docroot/wp-config.php" 2>/dev/null || true)
+            if [ -n "$r_db" ]; then
+                apply_wp_redis_config "$domain" "$docroot" "$r_db"
+            fi
         done
         verify_and_reload_ols
         log_success "All isolated websites repaired."
@@ -635,6 +666,13 @@ clean_single_domain() {
     rm -f "${docroot}/wp-content/object-cache.php" 2>/dev/null || true
     rm -f "${docroot}/wp-content/advanced-cache.php" 2>/dev/null || true
     rm -f "${docroot}/wp-content/.litespeed_conf.dat" 2>/dev/null || true
+    # 1b. Flush Redis DB for this site if allocated to immediately break deadlocks
+    local r_db
+    r_db=$(extract_wp_redis_db "${docroot}/wp-config.php" 2>/dev/null || true)
+    if [ -n "$r_db" ] && [ "$r_db" -gt 0 ] 2>/dev/null && command -v redis-cli >/dev/null 2>&1; then
+        redis-cli -n "$r_db" FLUSHDB >/dev/null 2>&1 || true
+        log_info "Flushed Redis Database $r_db for $target_domain."
+    fi
 
     # 2. Remove legacy .user.ini (aaPanel locks with chattr +i)
     if [ -f "${docroot}/.user.ini" ]; then

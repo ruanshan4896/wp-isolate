@@ -65,8 +65,8 @@ This project was built to completely resolve the two biggest problems when manag
 │ Redis Object Cache Isolation                                                           │
 │                                                                                        │
 │  [ Layer 5: Database ID & Cache Key Salt Isolation ]                                   │
-│   ├── Auto-Scaling: Automatically increases max databases from 16 to 64 in redis.conf  │
-│   ├── Auto-Allocation & Re-use: Allocates Database IDs (1..63) and preserves them      │
+│   ├── Auto-Scaling: Automatically increases max databases from 16 to 256 in redis.conf │
+│   ├── Auto-Allocation & Re-use: Allocates Database IDs (1..255) and preserves them     │
 │   ├── LiteSpeed Cache Sync: Auto generates drop-in & .litespeed_conf.dat               │
 │   └── Zero Cache Collision via unique Key Salt prefixes per domain                     │
 └────────────────────────────────────────────┬───────────────────────────────────────────┘
@@ -83,7 +83,7 @@ This project was built to completely resolve the two biggest problems when manag
 │                                                                                        │
 │  [ Layer 7: Global PHP Tuning & OPcache JIT (PHP 8+) ]                                 │
 │   ├── Auto-activates OPcache JIT compiler (tracing, 64M) for PHP 8.0+                  │
-│   └── Optimizes upload_max_filesize = 256M, post_max_size = 256M, execution_time = 300│
+│   └── Optimizes upload_max_filesize = 256M, post_max_size = 256M, execution_time = 60 │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 

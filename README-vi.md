@@ -66,8 +66,10 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 │ Redis Object Cache Isolation                                                           │
 │                                                                                        │
 │  [ Lớp 5: Database ID & Cache Key Salt Isolation ]                                     │
-│   ├── Auto-Scaling: Tự động nâng số databases từ 16 lên 64 trong redis.conf            │
-│   ├── Auto-Allocation & Re-use: Cấp phát Database ID (1..63) và bảo lưu nguyên vẹn ID  │
+│   ├── Auto-Scaling: Tự động nâng số databases từ 16 lên 256 trong redis.conf           │
+│   ├── Auto-Allocation & Re-use: Cấp phát Database ID (1..255) và bảo lưu nguyên vẹn ID │
+│   │   khi chạy lại / cô lập hàng loạt (tránh mất cache đang hoạt động)                 │
+│   ├── wp-config.php: Tự động tiêm WP_REDIS_DATABASE & WP_CACHE_KEY_SALT                │
 │   ├── LiteSpeed Cache Sync: Tự động đồng bộ Database ID & Key Prefix vào thẳng plugin  │
 │   │   LiteSpeed Cache (LSCWP), sinh drop-in & .litespeed_conf.dat tự động              │
 │   └── Chống đè cache tuyệt đối (Zero Cache Collision) nhờ tiền tố Salt theo từng domain │
@@ -85,7 +87,7 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 │                                                                                        │
 │  [ Lớp 7: Global PHP Tuning & OPcache JIT (PHP 8+) ]                                   │
 │   ├── Tự động kích hoạt OPcache JIT compiler (tracing, 64M) cho PHP 8.0+               │
-│   └── Tối ưu upload_max_filesize = 256M, post_max_size = 256M, execution_time = 300   │
+│   └── Tối ưu upload_max_filesize = 256M, post_max_size = 256M, execution_time = 60    │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -207,6 +209,22 @@ wp-isolate repair mywebsite.com
 wp-isolate repair
 ```
 
+### 7. Tự động khắc phục lỗi 503 sau khi Restore (Auto-Healer)
+Khi bạn giải nén mã nguồn hoặc dùng plugin khôi phục dữ liệu (như UpdraftPlus), mã nguồn thường bị sai quyền sở hữu hoặc mang theo các cấu hình cache cũ gây xung đột dẫn đến sập **lỗi 503 Service Unavailable**.
+
+**Khắc phục thủ công:**
+```bash
+wp-isolate clean mywebsite.com
+```
+Lệnh này sẽ dọn sạch cache rác (`object-cache.php`), bẻ khóa `.user.ini`, phân quyền lại và ép website hoạt động trở lại.
+
+**Tự động hóa hoàn toàn (Auto-Healer Daemon):**
+Kích hoạt Daemon chạy ngầm giám sát log của máy chủ. Khi phát hiện lỗi 503, nó sẽ tự động chạy lệnh `clean` trong 0.1 giây để ép website sống lại mà không cần bạn phải can thiệp:
+```bash
+wp-isolate healer enable
+```
+*(Lưu ý: Daemon này được tự động kích hoạt khi bạn chạy script cài đặt `install.sh`)*
+
 ---
 
 ## Cơ Chế An Toàn (Fail-Safe & Auto-Rollback)
@@ -225,11 +243,19 @@ wp-isolate repair
 │   ├── wp-isolate               # CLI thực thi chính
 │   └── wp-isolate-healer        # Daemon tự động phục hồi lỗi 503 thời gian thực
 ├── lib/
+<<<<<<< HEAD
 │   ├── common.sh                # Helper dùng chung, JIT & tối ưu PHP toàn cục
 │   ├── os_user.sh               # Quản lý Linux user & POSIX ACL
 │   ├── ols_vhost.sh             # Điều khiển cấu hình OpenLiteSpeed & suEXEC
 │   ├── mysql_limit.sh           # Quản lý giới hạn kết nối MySQL
 │   └── redis_isolate.sh         # Quản lý cô lập Redis Object Cache (DB ID & Salt)
+=======
+│   ├── common.sh                # Helper dùng chung, cấu hình PHP toàn cầu
+│   ├── os_user.sh               # Quản lý Linux user & POSIX ACL
+│   ├── ols_vhost.sh             # Điều khiển cấu hình OpenLiteSpeed & suEXEC
+│   ├── mysql_limit.sh           # Quản lý giới hạn kết nối MySQL
+│   └── redis_isolate.sh         # Quản lý cô lập Redis Object Cache
+>>>>>>> f09c7c0 (fix(redis): prevent deadlocks by disabling object-admin/persistent, scaling DBs to 256, adding 30s timeout and volatile-lru eviction)
 ├── backups/                     # Thư mục lưu trữ backup tự động
 ├── data/
 │   └── sites.json               # Cơ sở dữ liệu registry trạng thái hệ thống

@@ -148,6 +148,8 @@ EOF
     [ -f "${tmp_dir}/wp-content/.litespeed_conf.dat" ] || { echo ".litespeed_conf.dat not created"; exit 1; }
     grep -q '"object-db_id":9' "${tmp_dir}/wp-content/.litespeed_conf.dat" || { echo ".litespeed_conf.dat missing db_id"; exit 1; }
     grep -q '"object-key_prefix":"ls_site_com_"' "${tmp_dir}/wp-content/.litespeed_conf.dat" || { echo ".litespeed_conf.dat missing prefix"; exit 1; }
+    grep -q '"object-persistent":0' "${tmp_dir}/wp-content/.litespeed_conf.dat" || { echo ".litespeed_conf.dat persistent flag must be 0"; exit 1; }
+    grep -q '"object-admin":0' "${tmp_dir}/wp-content/.litespeed_conf.dat" || { echo ".litespeed_conf.dat admin flag must be 0"; exit 1; }
 
     rm -rf "$tmp_dir"
     echo "test_sync_litespeed_redis_config PASS"

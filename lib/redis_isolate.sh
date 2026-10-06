@@ -50,13 +50,15 @@ is_redis_available() {
 }
 
 ensure_redis_databases() {
-    local target_dbs="${1:-64}"
+    local target_dbs="${1:-256}"
     local conf
     conf=$(find_redis_conf 2>/dev/null || true)
 
     if [ -n "$conf" ] && [ -f "$conf" ]; then
         local current
         current=$(grep -E "^[[:space:]]*databases[[:space:]]+[0-9]+" "$conf" | awk '{print $2}' | head -n 1 || echo "16")
+        local changed=false
+
         if [ -z "$current" ] || [ "$current" -lt "$target_dbs" ]; then
             log_info "Increasing Redis databases from ${current:-16} to ${target_dbs} in $conf..."
             if grep -qE "^[[:space:]]*databases[[:space:]]+" "$conf"; then
@@ -64,17 +66,45 @@ ensure_redis_databases() {
             else
                 echo -e "\ndatabases ${target_dbs}" >> "$conf"
             fi
-            
-            # Apply dynamically to running instance if redis-cli works
             redis-cli config set databases "$target_dbs" >/dev/null 2>&1 || true
+            changed=true
+        fi
 
-            # Reload service
+        # Ensure timeout is set to 30s to prevent zombie/hanging persistent sockets
+        local cur_timeout
+        cur_timeout=$(grep -E "^[[:space:]]*timeout[[:space:]]+[0-9]+" "$conf" | awk '{print $2}' | head -n 1 || echo "0")
+        if [ -z "$cur_timeout" ] || [ "$cur_timeout" -eq 0 ]; then
+            log_info "Setting Redis idle connection timeout to 30s in $conf..."
+            if grep -qE "^[[:space:]]*timeout[[:space:]]+" "$conf"; then
+                sed_i -E "s/^[[:space:]]*timeout[[:space:]]+[0-9]+/timeout 30/" "$conf"
+            else
+                echo -e "\ntimeout 30" >> "$conf"
+            fi
+            redis-cli config set timeout 30 >/dev/null 2>&1 || true
+            changed=true
+        fi
+
+        # Ensure maxmemory-policy is set to volatile-lru (or allkeys-lru) so stale cache/transients get evicted
+        local cur_policy
+        cur_policy=$(grep -E "^[[:space:]]*maxmemory-policy[[:space:]]+" "$conf" | awk '{print $2}' | head -n 1 || echo "noeviction")
+        if [ "$cur_policy" = "noeviction" ] || [ -z "$cur_policy" ]; then
+            log_info "Setting Redis eviction policy to volatile-lru in $conf..."
+            if grep -qE "^[[:space:]]*maxmemory-policy[[:space:]]+" "$conf"; then
+                sed_i -E "s/^[[:space:]]*maxmemory-policy[[:space:]]+[a-z-]+/maxmemory-policy volatile-lru/" "$conf"
+            else
+                echo -e "\nmaxmemory-policy volatile-lru" >> "$conf"
+            fi
+            redis-cli config set maxmemory-policy volatile-lru >/dev/null 2>&1 || true
+            changed=true
+        fi
+
+        if [ "$changed" = true ]; then
             if command -v systemctl >/dev/null 2>&1; then
                 systemctl restart redis 2>/dev/null || systemctl restart redis-server 2>/dev/null || true
             elif [ -x "/etc/init.d/redis" ]; then
                 /etc/init.d/redis restart >/dev/null 2>&1 || true
             fi
-            log_success "Redis databases updated to ${target_dbs}."
+            log_success "Redis configuration updated (databases=${target_dbs}, timeout=30, policy=volatile-lru)."
         fi
     fi
 }
@@ -304,6 +334,12 @@ if ( ! defined( 'WP_REDIS_DATABASE' ) ) {
 if ( ! defined( 'WP_CACHE_KEY_SALT' ) ) {
     define( 'WP_CACHE_KEY_SALT', '${clean_prefix}' );
 }
+if ( ! defined( 'WP_REDIS_TIMEOUT' ) ) {
+    define( 'WP_REDIS_TIMEOUT', 1 );
+}
+if ( ! defined( 'WP_REDIS_READ_TIMEOUT' ) ) {
+    define( 'WP_REDIS_READ_TIMEOUT', 1 );
+}
 /* END WP-ISOLATE REDIS */
 EOF
 )
@@ -415,7 +451,7 @@ EOF
     # Step 1b: Ensure LiteSpeed .litespeed_conf.dat configuration file exists with allocated DB ID
     local conf_dat="$docroot/wp-content/.litespeed_conf.dat"
     cat << EOF > "$conf_dat"
-{"debug":false,"object":1,"object-kind":1,"object-host":"127.0.0.1","object-port":6379,"object-life":360,"object-user":"","object-pswd":"","object-db_id":${db_id},"object-persistent":1,"object-admin":1,"object-key_prefix":"${clean_prefix}","object-global_groups":["users","userlogins","usermeta","user_meta","site-transient","site-options","site-lookup","blog-lookup","blog-details","rss","global-posts","blog-id-cache"],"object-non_persistent_groups":["comment","counts","plugins"]}
+{"debug":false,"object":1,"object-kind":1,"object-host":"127.0.0.1","object-port":6379,"object-life":360,"object-user":"","object-pswd":"","object-db_id":${db_id},"object-persistent":0,"object-admin":0,"object-key_prefix":"${clean_prefix}","object-global_groups":["users","userlogins","usermeta","user_meta","site-transient","site-options","site-lookup","blog-lookup","blog-details","rss","global-posts","blog-id-cache"],"object-non_persistent_groups":["comment","counts","plugins"]}
 EOF
 
     if [ "${EUID:-$(id -u)}" -eq 0 ]; then
@@ -443,6 +479,8 @@ EOF
             "$wp_cli" litespeed-option set cache-object-port 6379 --path="$docroot" --allow-root >/dev/null 2>&1 || true
             "$wp_cli" litespeed-option set cache-object-db_id "$db_id" --path="$docroot" --allow-root >/dev/null 2>&1 || true
             "$wp_cli" litespeed-option set cache-object-key_prefix "$clean_prefix" --path="$docroot" --allow-root >/dev/null 2>&1 || true
+            "$wp_cli" litespeed-option set cache-object-persistent 0 --path="$docroot" --allow-root >/dev/null 2>&1 || true
+            "$wp_cli" litespeed-option set cache-object-admin 0 --path="$docroot" --allow-root >/dev/null 2>&1 || true
             synced=true
         fi
     fi
@@ -470,6 +508,8 @@ if (file_exists($root . '/wp-load.php')) {
         update_option('litespeed.conf.cache-object-port', 6379);
         update_option('litespeed.conf.cache-object-db_id', $db_id);
         update_option('litespeed.conf.cache-object-key_prefix', $prefix);
+        update_option('litespeed.conf.cache-object-persistent', 0);
+        update_option('litespeed.conf.cache-object-admin', 0);
 
         // 2. LiteSpeed Cache serialized options array
         $conf = get_option('litespeed-conf');
@@ -480,6 +520,8 @@ if (file_exists($root . '/wp-load.php')) {
             $conf['cache-object-port'] = 6379;
             $conf['cache-object-db_id'] = $db_id;
             $conf['cache-object-key_prefix'] = $prefix;
+            $conf['cache-object-persistent'] = 0;
+            $conf['cache-object-admin'] = 0;
             update_option('litespeed-conf', $conf);
         }
 
@@ -493,6 +535,8 @@ if (file_exists($root . '/wp-load.php')) {
                     'object-port' => 6379,
                     'object-db_id' => $db_id,
                     'object-key_prefix' => $prefix,
+                    'object-persistent' => 0,
+                    'object-admin' => 0,
                 ]);
             } catch (\Throwable $e) {}
         }

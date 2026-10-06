@@ -10,12 +10,15 @@ echo "$output" | grep -q "isolate <domain>" || { echo "isolate command missing i
 echo "$output" | grep -q "list" || { echo "list command missing in help"; exit 1; }
 echo "$output" | grep -q "sentinel" || { echo "sentinel command missing in help"; exit 1; }
 echo "$output" | grep -q "scan" || { echo "scan command missing in help"; exit 1; }
-# Test execution via symlink
+
+# Test execution via symlink (when supported by environment)
 tmp_symlink=$(mktemp)
 rm -f "$tmp_symlink"
-ln -s "${SCRIPT_DIR}/bin/wp-isolate" "$tmp_symlink"
-sym_output=$(bash "$tmp_symlink" --help || true)
-echo "$sym_output" | grep -q "Usage: wp-isolate" || { echo "Symlink execution failed"; rm -f "$tmp_symlink"; exit 1; }
+ln -s "${SCRIPT_DIR}/bin/wp-isolate" "$tmp_symlink" 2>/dev/null || true
+if [ -L "$tmp_symlink" ]; then
+    sym_output=$(bash "$tmp_symlink" --help || true)
+    echo "$sym_output" | grep -q "Usage: wp-isolate" || { echo "Symlink execution failed"; rm -f "$tmp_symlink"; exit 1; }
+fi
 rm -f "$tmp_symlink"
 
 echo "test_cli_help PASS"

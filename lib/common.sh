@@ -110,9 +110,9 @@ optimize_global_php_config() {
             echo "post_max_size = 256M" >> "$ini"
             changed=true
         fi
-        if ! grep -q "max_execution_time.*=.*300" "$ini" 2>/dev/null; then
+        if ! grep -q "max_execution_time.*=.*60" "$ini" 2>/dev/null; then
             sed_i '/^[[:space:]]*;*[[:space:]]*max_execution_time[[:space:]]*=/d' "$ini"
-            echo "max_execution_time = 300" >> "$ini"
+            echo "max_execution_time = 60" >> "$ini"
             changed=true
         fi
         
