@@ -278,6 +278,7 @@ restore_ols_vhost() {
 }
 
 verify_and_reload_ols() {
+    local only_user="${1:-}"
     log_info "Verifying OpenLiteSpeed configuration syntax..."
     local test_bin=""
     for b in "/usr/local/lsws/bin/openlitespeed" "/usr/local/lsws/bin/lshttpd"; do
@@ -304,8 +305,13 @@ verify_and_reload_ols() {
     elif command -v systemctl >/dev/null 2>&1; then
         systemctl restart lsws 2>/dev/null || systemctl reload lsws 2>/dev/null || true
     fi
-    # Force termination of old lsphp worker processes so OpenLiteSpeed respawns workers under the new isolated user UID
-    pkill -9 -f lsphp 2>/dev/null || true
+    # Terminate old lsphp workers so OpenLiteSpeed respawns them under the isolated UID.
+    # When a single site user is given, only that site's workers are killed (other sites keep serving).
+    if [ -n "$only_user" ]; then
+        pkill -9 -u "$only_user" -f lsphp 2>/dev/null || true
+    else
+        pkill -9 -f lsphp 2>/dev/null || true
+    fi
     log_success "OpenLiteSpeed reloaded."
     return 0
 }

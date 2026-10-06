@@ -597,33 +597,25 @@ clean_single_domain() {
 
     log_info "Cleaning up stale cache and sockets for $target_domain..."
 
-    # 1. Purge legacy Redis config and drop-ins
+    # 1. Purge legacy Redis config and drop-ins (object-cache only; page cache untouched)
     purge_legacy_redis_config "$target_domain" "$docroot"
-    rm -f "${docroot}/wp-content/advanced-cache.php" 2>/dev/null || true
 
-    # 2. Remove legacy .user.ini (aaPanel locks with chattr +i)
-    if [ -f "${docroot}/.user.ini" ]; then
-        chattr -i "${docroot}/.user.ini" 2>/dev/null || true
-        rm -f "${docroot}/.user.ini" 2>/dev/null || true
-    fi
+    # NOTE: we intentionally do NOT touch advanced-cache.php, WP_CACHE or .user.ini here.
+    # Those belong to LiteSpeed Cache / aaPanel; removing them on every 503 broke page cache
+    # and fought with the plugin ("wp-config.php operation failed when changing WP_CACHE").
 
-    # 3. Disable WP_CACHE in wp-config.php if present
-    if [ -f "${docroot}/wp-config.php" ]; then
-        sed_i -E "s/define\([[:space:]]*['\"]WP_CACHE['\"].*/define( 'WP_CACHE', false );/g" "${docroot}/wp-config.php" 2>/dev/null || true
-    fi
-
-    # 4. Remove LiteSpeed socket files
+    # 2. Remove this site's stale LiteSpeed socket files only
     rm -f "/tmp/lshttpd/${target_domain}"* 2>/dev/null || true
 
-    # 4b. Remove any rogue PHP files from uploads directory
+    # 3. Remove any rogue PHP files from uploads directory
     if [ -d "${docroot}/wp-content/uploads" ]; then
         find "${docroot}/wp-content/uploads" -type f -name "*.php" -delete 2>/dev/null || true
     fi
 
-    # 5. Re-apply permissions and vhost configuration
+    # 4. Re-apply vhost configuration (same limits as isolate: 2047M virtual memory)
     local user
     user=$(get_site_user "$target_domain")
-    isolate_ols_vhost "$target_domain" "$user" 15 "512M" 10 "$docroot"
+    isolate_ols_vhost "$target_domain" "$user" 15 "2047M" 10 "$docroot"
     apply_site_permissions "$target_domain" "$docroot"
 
     log_success "Cleaned and repaired $target_domain."
@@ -677,13 +669,10 @@ cmd_clean() {
         log_success "Cleaned $cleaned website(s)."
     else
         clean_single_domain "$target_domain"
-        local direct_dir="${AAPANEL_WWWROOT_DIR:-/www/wwwroot}/${target_domain}"
-        if [ -d "$direct_dir" ] && [ -f "${direct_dir}/wp-config.php" ]; then
-            purge_legacy_redis_config "$target_domain" "$direct_dir"
-        fi
-        pkill -9 -f lsphp 2>/dev/null || true
-        verify_and_reload_ols
-        log_success "Cleaned and repaired $target_domain perfectly!"
+        # Only restart PHP workers of THIS site; killing all lsphp caused 503s on other sites,
+        # which the sentinel then "healed" too -> cascading failures across the server.
+        verify_and_reload_ols "$(get_site_user "$target_domain")"
+        log_success "Cleaned and repaired $target_domain."
     fi
 }
 

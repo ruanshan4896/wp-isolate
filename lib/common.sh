@@ -167,15 +167,29 @@ detect_php_cli() {
     return 1
 }
 
+# PHP CLI that has the same extensions as the websites (mysqli etc.).
+# The OS /usr/bin/php on this stack usually lacks mysqli, so prefer OpenLiteSpeed's lsphp.
+detect_site_php_cli() {
+    local p
+    for p in $(ls -1d /usr/local/lsws/lsphp*/bin/php 2>/dev/null | sort -V -r) $(ls -1d /www/server/php/*/bin/php 2>/dev/null | sort -V -r); do
+        if [ -x "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+    detect_php_cli
+}
+
 purge_legacy_redis_config() {
     local domain="$1"
     local docroot="${2:-/www/wwwroot/${domain}}"
     local wp_config="$docroot/wp-config.php"
 
     if [ -f "$wp_config" ]; then
-        # Unlock if immutable (aaPanel anti-tamper or chattr +i)
+        # Unlock if immutable (aaPanel anti-tamper or chattr +i).
+        # Do NOT chmod here: owner/mode are managed by apply_site_permissions; forcing 640 on
+        # every 503-heal fought with LiteSpeed Cache writing WP_CACHE.
         chattr -i "$wp_config" 2>/dev/null || true
-        chmod 640 "$wp_config" 2>/dev/null || true
 
         local py_bin=""
         if command -v python3 >/dev/null 2>&1; then
@@ -188,17 +202,24 @@ purge_legacy_redis_config() {
 
         if [ -n "$py_bin" ]; then
             "$py_bin" -c "
-import re, sys
+import re, sys, os, stat
 f = sys.argv[1]
 try:
     with open(f, 'r', encoding='utf-8', errors='ignore') as fp:
         c = fp.read()
+    orig = c
     c = re.sub(r'/\*\s*BEGIN WP-ISOLATE REDIS\s*\*.*?/\*\s*END WP-ISOLATE REDIS\s*\*/\r?\n?', '', c, flags=re.DOTALL)
     c = re.sub(r'if\s*\(\s*!\s*defined\s*\(\s*[\x27\"](?:LITESPEED_CONF|WP_REDIS_|WP_CACHE_KEY_SALT)[^\)]+\)\s*\)\s*\{[^\}]*\}\r?\n?', '', c, flags=re.DOTALL)
     c = re.sub(r'[ \t]*define\s*\(\s*[\x27\"](?:LITESPEED_CONF|WP_REDIS_|WP_CACHE_KEY_SALT)[^;]+;\r?\n?', '', c)
     c = re.sub(r'\n{3,}', '\n\n', c)
-    with open(f, 'w', encoding='utf-8') as fp:
-        fp.write(c)
+    if c != orig:
+        mode = stat.S_IMODE(os.stat(f).st_mode)
+        os.chmod(f, mode | stat.S_IWUSR)
+        try:
+            with open(f, 'w', encoding='utf-8') as fp:
+                fp.write(c)
+        finally:
+            os.chmod(f, mode)
 except Exception:
     pass
 " "$wp_config" 2>/dev/null || true
@@ -217,7 +238,7 @@ except Exception:
     # 4. If LiteSpeed Cache plugin is present, reset its database option so Object Cache is explicitly OFF
     if [ -d "${docroot}/wp-content/plugins/litespeed-cache" ] && [ -f "${docroot}/wp-load.php" ]; then
         local php_bin
-        php_bin=$(detect_php_cli 2>/dev/null || true)
+        php_bin=$(detect_site_php_cli 2>/dev/null || true)
         if [ -n "$php_bin" ]; then
             local reset_script="${docroot}/.wp-isolate-reset-lscache.php"
             cat << 'EOF' > "$reset_script"
@@ -243,7 +264,13 @@ if (file_exists($root . '/wp-load.php')) {
 }
 EOF
             chmod 644 "$reset_script" 2>/dev/null || true
-            $php_bin "$reset_script" >/dev/null 2>&1 || true
+            local owner
+            owner=$(stat -c %U "$docroot" 2>/dev/null || echo "")
+            if [ "${EUID:-$(id -u)}" -eq 0 ] && [ -n "$owner" ] && [ "$owner" != "root" ] && command -v runuser >/dev/null 2>&1; then
+                timeout 30 runuser -u "$owner" -- "$php_bin" "$reset_script" >/dev/null 2>&1 || true
+            else
+                timeout 30 "$php_bin" "$reset_script" >/dev/null 2>&1 || true
+            fi
             rm -f "$reset_script" 2>/dev/null || true
         fi
     fi

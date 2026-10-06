@@ -49,12 +49,15 @@ EOF
     touch "${tmp_base}/www/wwwroot/mytest.com/wp-content/object-cache.php"
     touch "${tmp_base}/www/wwwroot/mytest.com/wp-content/.litespeed_conf.dat"
     touch "${tmp_base}/www/wwwroot/mytest.com/.user.ini"
+    touch "${tmp_base}/www/wwwroot/mytest.com/wp-content/advanced-cache.php"
 
     AAPANEL_OLS_VHOST_DIR="${tmp_base}/www/server/panel/vhost/openlitespeed" AAPANEL_WWWROOT_DIR="${tmp_base}/www/wwwroot" WP_ISOLATE_DIR="${tmp_base}/opt/wp-isolate" bash "${SCRIPT_DIR}/bin/wp-isolate" clean mytest.com >/dev/null
     
     [ ! -f "${tmp_base}/www/wwwroot/mytest.com/wp-content/object-cache.php" ] || { echo "Clean failed to remove object-cache.php"; exit 1; }
     [ ! -f "${tmp_base}/www/wwwroot/mytest.com/wp-content/.litespeed_conf.dat" ] || { echo "Clean failed to remove .litespeed_conf.dat"; exit 1; }
-    [ ! -f "${tmp_base}/www/wwwroot/mytest.com/.user.ini" ] || { echo "Clean failed to remove .user.ini"; exit 1; }
+    # Regression guard: clean must NOT destroy aaPanel's .user.ini or LiteSpeed page cache drop-in
+    [ -f "${tmp_base}/www/wwwroot/mytest.com/.user.ini" ] || { echo "Clean must preserve .user.ini"; exit 1; }
+    [ -f "${tmp_base}/www/wwwroot/mytest.com/wp-content/advanced-cache.php" ] || { echo "Clean must preserve advanced-cache.php"; exit 1; }
     grep -q "WP-ISOLATE REDIS" "${tmp_base}/www/wwwroot/mytest.com/wp-config.php" && { echo "Clean failed to purge legacy Redis block"; exit 1; } || true
 
     rm -rf "$tmp_base"
