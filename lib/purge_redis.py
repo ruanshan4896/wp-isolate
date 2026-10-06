@@ -152,7 +152,7 @@ def main():
             # Reset LiteSpeed Cache & clean all corrupted transients across all sites
             wp_load = os.path.join(docroot, "wp-load.php")
             if os.path.isfile(wp_load):
-                reset_php = f"""<?php
+                reset_php = f"""
 define('WP_USE_THEMES', false);
 @require_once '{wp_load}';
 if (isset($GLOBALS['wpdb'])) {{

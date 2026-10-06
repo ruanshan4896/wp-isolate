@@ -26,6 +26,52 @@ def detect_php():
             return p
     return "php"
 
+# NOTE: code passed to `php -r` must NOT start with "<?php" (that causes a parse error).
+WP_BOOT = """
+error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED);
+$_SERVER['HTTP_HOST'] = '{domain}';
+$_SERVER['SERVER_NAME'] = '{domain}';
+$_SERVER['REQUEST_URI'] = '/';
+$_SERVER['REQUEST_METHOD'] = 'GET';
+define('WP_USE_THEMES', false);
+require_once '{wp_load}';
+"""
+
+def detect_site_user(docroot, domain):
+    try:
+        u = pwd.getpwuid(os.stat(docroot).st_uid).pw_name
+        if u.startswith("iso_") or u == "www":
+            return u
+    except Exception:
+        pass
+    clean_name = re.sub(r'[^a-z0-9]', '_', domain.lower()).strip('_')
+    candidate = f"iso_{clean_name}"[:32]
+    try:
+        pwd.getpwnam(candidate)
+        return candidate
+    except KeyError:
+        return "www"
+
+def run_wp_php(php_bin, code, user, cwd, timeout=30):
+    """Run PHP code as the site's own user (never root) so no root-owned cache files are created."""
+    cmd = [php_bin, "-d", "memory_limit=512M", "-r", code]
+    if user and user != "root" and os.geteuid() == 0:
+        cmd = ["runuser", "-u", user, "--"] + cmd
+    try:
+        p = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        return p.returncode == 0, p.stdout.decode("utf-8", "ignore"), p.stderr.decode("utf-8", "ignore")
+    except subprocess.TimeoutExpired:
+        return False, "", f"timeout after {timeout}s"
+    except Exception as e:
+        return False, "", str(e)
+
+def last_error_line(text):
+    lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+    for l in reversed(lines):
+        if "Fatal" in l or "Parse error" in l or "Error" in l or "timeout" in l:
+            return l[:300]
+    return lines[-1][:300] if lines else ""
+
 def main():
     print("===================================================================")
     print("      WP-ISOLATE: MASTER ONE-SHOT REPAIR ACROSS ALL WEBSITES       ")
@@ -146,38 +192,47 @@ def main():
                         pass
 
             # 3d. Database Flush: Delete all stale transients and reset LSCache in DB
+            flush_status = "no wp-load.php"
             if os.path.isfile(wp_load):
-                php_flush_code = f"""<?php
-define('WP_USE_THEMES', false);
-@require_once '{wp_load}';
-if (isset($GLOBALS['wpdb'])) {{
+                php_flush_code = WP_BOOT.format(domain=domain, wp_load=wp_load) + """
+if (isset($GLOBALS['wpdb'])) {
     $wpdb = $GLOBALS['wpdb'];
     // Delete all temporary transients (theme, plugin, core) to kill any infinite recursion loops
-    $wpdb->query("DELETE FROM {{$wpdb->options}} WHERE option_name LIKE '%_transient_%'");
-    if (function_exists('wp_clean_themes_cache')) {{
+    $n = $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '%\\_transient\\_%'");
+    if (function_exists('wp_clean_themes_cache')) {
         wp_clean_themes_cache();
-    }}
-    if (function_exists('wp_clean_plugins_cache')) {{
+    }
+    if (function_exists('wp_clean_plugins_cache')) {
         wp_clean_plugins_cache();
-    }}
-}}
-if (function_exists('update_option')) {{
+    }
+    echo 'FLUSHED:' . intval($n);
+}
+if (function_exists('update_option')) {
     update_option('litespeed.conf.cache-object', 0);
     update_option('litespeed.conf.cache-object-db_id', 0);
     update_option('litespeed.conf.cache-object-key_prefix', '');
     $conf = get_option('litespeed-conf');
-    if (is_array($conf)) {{
+    if (is_array($conf)) {
         $conf['cache-object'] = 0;
         $conf['cache-object-db_id'] = 0;
         $conf['cache-object-key_prefix'] = '';
         update_option('litespeed-conf', $conf);
-    }}
-}}
+    }
+}
 """
-                res = subprocess.run([php_bin, "-r", php_flush_code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=6)
+                ok, out, err = run_wp_php(php_bin, php_flush_code, site_user, docroot, timeout=30)
+                m = re.search(r'FLUSHED:(\d+)', out)
+                if m:
+                    flush_status = f"{m.group(1)} transient rows deleted"
+                else:
+                    flush_status = "FLUSH FAILED: " + (last_error_line(err) or last_error_line(out) or "unknown")
 
-            print(f"  [OK] Cleaned & Healed: {domain} (User: {site_user}, Transients Flushed)")
-            success_count += 1
+            tag = "[OK]" if not flush_status.startswith("FLUSH FAILED") else "[WARN]"
+            print(f"  {tag} {domain} (User: {site_user}) -> {flush_status}")
+            if tag == "[OK]":
+                success_count += 1
+            else:
+                fail_count += 1
 
         except Exception as e:
             print(f"  [WARN] Failed to process {domain}: {e}")
@@ -205,14 +260,18 @@ if (function_exists('update_option')) {{
         if not os.path.isfile(check_script):
             continue
 
-        test_code = f"<?php define('WP_USE_THEMES', false); @require_once '{check_script}'; echo 'OK';"
-        proc = subprocess.run([php_bin, "-r", test_code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
-        if b"OK" in proc.stdout and b"Fatal error" not in proc.stderr:
+        site_user = detect_site_user(docroot, domain)
+        # Boot WordPress fully (incl. theme functions) like a real admin request would
+        test_code = WP_BOOT.format(domain=domain, wp_load=check_script) + """
+if (function_exists('wp_get_theme')) { wp_get_theme(); }
+if (function_exists('get_theme_roots')) { get_theme_roots(); }
+echo 'HEALTH_OK';
+"""
+        ok, out, err = run_wp_php(php_bin, test_code, site_user, docroot, timeout=30)
+        if "HEALTH_OK" in out and "Fatal error" not in err and "Fatal error" not in out:
             healthy += 1
         else:
-            err = proc.stderr.decode("utf-8", errors="ignore").strip().splitlines()
-            last_err = err[-1] if err else "Unknown error"
-            print(f"  [ALERT] {domain}: {last_err}")
+            print(f"  [ALERT] {domain}: {last_error_line(err) or last_error_line(out) or 'no output (timeout?)'}")
 
     print("\n===================================================================")
     print(f"   REPAIR COMPLETE: {success_count} sites repaired | {healthy}/{len(sites)} verified healthy")
