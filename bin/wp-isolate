@@ -20,7 +20,6 @@ source "${SCRIPT_DIR}/lib/common.sh"
 source "${SCRIPT_DIR}/lib/os_user.sh"
 source "${SCRIPT_DIR}/lib/ols_vhost.sh"
 source "${SCRIPT_DIR}/lib/mysql_limit.sh"
-source "${SCRIPT_DIR}/lib/redis_isolate.sh"
 
 # Paths
 BASE_DIR="${WP_ISOLATE_DIR:-/opt/wp-isolate}"
@@ -39,7 +38,6 @@ init_storage() {
 update_site_registry() {
     local domain="$1"
     local user="$2"
-    local redis_db="$3"
     local reg="${SITES_REGISTRY:-/opt/wp-isolate/data/sites.json}"
     mkdir -p "$(dirname "$reg")"
     if [ ! -f "$reg" ]; then echo "{}" > "$reg"; fi
@@ -47,16 +45,16 @@ update_site_registry() {
     if command -v python3 >/dev/null 2>&1; then
         python3 -c "
 import json, sys
-reg_file, domain, user, r_db = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+reg_file, domain, user = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     with open(reg_file, 'r') as f:
         data = json.load(f)
 except Exception:
     data = {}
-data[domain] = {'user': user, 'redis_db': int(r_db) if r_db.isdigit() else r_db}
+data[domain] = {'user': user}
 with open(reg_file, 'w') as f:
     json.dump(data, f, indent=2)
-" "$reg" "$domain" "$user" "$redis_db" 2>/dev/null || true
+" "$reg" "$domain" "$user" 2>/dev/null || true
     fi
 }
 
@@ -102,8 +100,6 @@ Options for 'isolate':
   --mem-limit <size>            Max memory limit e.g. 512M (Default: 512M)
   --db-limit <num>              Max MySQL connections for site DB user (Default: 25)
   --req-limit <num>             Max dynamic requests/sec per client IP (Default: 10)
-  --redis-db <num>              Custom Redis Database ID (Default: auto-allocated 1..63)
-  --no-redis                    Skip Redis cache isolation configuration
   --docroot <path>              Override website document root path
 
 Examples:
@@ -118,8 +114,8 @@ EOF
 
 cmd_list() {
     init_storage
-    printf "%-25s | %-10s | %-20s | %-8s | %-10s | %-10s\n" "DOMAIN" "STATUS" "LINUX USER" "PHP VER" "MAX CONNS" "REDIS DB"
-    echo "-------------------------------------------------------------------------------------------------------------"
+    printf "%-25s | %-10s | %-20s | %-8s | %-10s\n" "DOMAIN" "STATUS" "LINUX USER" "PHP VER" "MAX CONNS"
+    echo "---------------------------------------------------------------------------------------------------"
 
     local domains=()
     local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
@@ -159,7 +155,6 @@ cmd_list() {
         local user="www"
         local php_ver="-"
         local max_conns="-"
-        local redis_db="-"
 
         local vhost_file
         vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
@@ -176,15 +171,7 @@ cmd_list() {
             fi
         fi
 
-        if [ -f "$docroot/wp-config.php" ]; then
-            local r_val
-            r_val=$(extract_wp_redis_db "$docroot/wp-config.php" 2>/dev/null || true)
-            if [ -n "$r_val" ]; then
-                redis_db="DB ${r_val}"
-            fi
-        fi
-
-        printf "%-25s | %-10s | %-20s | %-8s | %-10s | %-10s\n" "$domain" "$status" "$user" "$php_ver" "$max_conns" "$redis_db"
+        printf "%-25s | %-10s | %-20s | %-8s | %-10s\n" "$domain" "$status" "$user" "$php_ver" "$max_conns"
     done
 }
 
@@ -195,8 +182,6 @@ cmd_isolate() {
     local db_limit=25
     local req_limit=10
     local custom_docroot=""
-    local custom_redis_db=""
-    local enable_redis=true
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -204,8 +189,8 @@ cmd_isolate() {
             --mem-limit) mem_limit="$2"; shift 2 ;;
             --db-limit) db_limit="$2"; shift 2 ;;
             --req-limit) req_limit="$2"; shift 2 ;;
-            --redis-db) custom_redis_db="$2"; shift 2 ;;
-            --no-redis) enable_redis=false; shift 1 ;;
+            --redis-db) shift 2 ;; # Deprecated no-op
+            --no-redis) shift 1 ;; # Deprecated no-op
             --docroot) custom_docroot="$2"; shift 2 ;;
             -*) log_error "Unknown option: $1"; exit 1 ;;
             *)
@@ -274,30 +259,15 @@ cmd_isolate() {
         set_mysql_user_limit "$db_user" "$db_limit"
     fi
 
-    # Step 6: Configure Redis Cache Isolation
-    local redis_db=""
-    if [ "$enable_redis" = true ] && ([ -f "$docroot/wp-config.php" ] || is_redis_available); then
-        ensure_redis_databases 256
-        if [ -n "$custom_redis_db" ]; then
-            redis_db="$custom_redis_db"
-        else
-            # Reuse existing assigned database ID if already configured, otherwise allocate next available
-            redis_db=$(get_existing_wp_redis_db "$domain" "$docroot" "$SITES_REGISTRY" 2>/dev/null || true)
-            if [ -z "$redis_db" ]; then
-                redis_db=$(get_next_available_redis_db "$SITES_REGISTRY" "$domain")
-            fi
-        fi
-        apply_wp_redis_config "$domain" "$docroot" "$redis_db"
-    fi
+    # Step 6: Purge Legacy Redis Configuration (Pure Isolation Model)
+    purge_legacy_redis_config "$domain" "$docroot"
 
     # Step 7: Syntax Verification & Graceful Reload (Fail-Safe Rollback Engine)
     if ! verify_and_reload_ols; then
         log_error "OpenLiteSpeed validation failed! Initiating IMMEDIATE AUTO-ROLLBACK..."
         [ -f "${backup_dir}/vhost.conf" ] && cp "${backup_dir}/vhost.conf" "$outer_file"
         [ -f "${backup_dir}/detail.conf" ] && cp "${backup_dir}/detail.conf" "$detail_file"
-        if [ -n "$redis_db" ]; then
-            remove_wp_redis_config "$domain" "$docroot" "$redis_db"
-        fi
+        purge_legacy_redis_config "$domain" "$docroot"
         restore_site_permissions "$domain" "$docroot"
         remove_isolated_user "$domain"
         verify_and_reload_ols || true
@@ -305,14 +275,7 @@ cmd_isolate() {
         return 1
     fi
 
-    # Warm up site with an HTTP/HTTPS request so WordPress and LiteSpeed Cache immediately connect and populate Redis
-    if [ "$enable_redis" = true ] && command -v curl >/dev/null 2>&1; then
-        curl -s -k -m 5 --resolve "${domain}:80:127.0.0.1" --resolve "${domain}:443:127.0.0.1" "https://${domain}/" >/dev/null 2>&1 || \
-        curl -s -k -m 5 --resolve "${domain}:80:127.0.0.1" --resolve "${domain}:443:127.0.0.1" "http://${domain}/" >/dev/null 2>&1 || \
-        curl -s -k -m 5 -H "Host: ${domain}" "http://127.0.0.1/" >/dev/null 2>&1 || true
-    fi
-
-    update_site_registry "$domain" "$user" "${redis_db:-}"
+    update_site_registry "$domain" "$user"
     log_success "Website $domain successfully ISOLATED!"
 }
 
@@ -340,12 +303,8 @@ cmd_restore() {
         remove_mysql_user_limit "$db_user"
     fi
 
-    # Remove Redis cache configuration and flush isolated DB
-    local redis_db=""
-    if [ -f "$docroot/wp-config.php" ]; then
-        redis_db=$(extract_wp_redis_db "$docroot/wp-config.php" 2>/dev/null || true)
-    fi
-    remove_wp_redis_config "$domain" "$docroot" "$redis_db"
+    # Purge legacy Redis configuration and drop-ins
+    purge_legacy_redis_config "$domain" "$docroot"
     remove_from_registry "$domain"
 
     remove_isolated_user "$domain"
@@ -395,21 +354,6 @@ cmd_status() {
         echo "VHost Config:        ${vhost_file:-Not Found}"
     fi
 
-    if [ -f "$docroot/wp-config.php" ]; then
-        local r_val
-        r_val=$(extract_wp_redis_db "$docroot/wp-config.php" 2>/dev/null || true)
-        local r_salt
-        r_salt=$(extract_wp_redis_salt "$docroot/wp-config.php" 2>/dev/null || true)
-        if [ -n "$r_val" ]; then
-            echo "Redis Database ID:   DB $r_val"
-            [ -n "$r_salt" ] && echo "Redis Key Salt:      $r_salt"
-            if [ -d "$docroot/wp-content/plugins/litespeed-cache" ]; then
-                echo "LiteSpeed Cache:     Synchronized (DB $r_val)"
-            fi
-        else
-            echo "Redis Database:      Not configured"
-        fi
-    fi
     echo "=========================================================="
 }
 
@@ -438,18 +382,13 @@ cmd_verify() {
 
 cmd_repair() {
     local target_domain="${1:-}"
-    ensure_redis_databases 256
     if [ -n "$target_domain" ]; then
         local user
         user=$(get_site_user "$target_domain")
         local docroot="/www/wwwroot/${target_domain}"
         isolate_ols_vhost "$target_domain" "$user" 15 "512M" 10 "$docroot"
         apply_site_permissions "$target_domain" "$docroot"
-        local r_db
-        r_db=$(extract_wp_redis_db "$docroot/wp-config.php" 2>/dev/null || true)
-        if [ -n "$r_db" ]; then
-            apply_wp_redis_config "$target_domain" "$docroot" "$r_db"
-        fi
+        purge_legacy_redis_config "$target_domain" "$docroot"
         verify_and_reload_ols
         log_success "Repaired $target_domain."
     else
@@ -483,11 +422,7 @@ cmd_repair() {
             local docroot="${wwwroot_dir}/${domain}"
             isolate_ols_vhost "$domain" "$user" 15 "512M" 10 "$docroot"
             apply_site_permissions "$domain" "$docroot"
-            local r_db
-            r_db=$(extract_wp_redis_db "$docroot/wp-config.php" 2>/dev/null || true)
-            if [ -n "$r_db" ]; then
-                apply_wp_redis_config "$domain" "$docroot" "$r_db"
-            fi
+            purge_legacy_redis_config "$domain" "$docroot"
         done
         verify_and_reload_ols
         log_success "All isolated websites repaired."
@@ -662,17 +597,9 @@ clean_single_domain() {
 
     log_info "Cleaning up stale cache and sockets for $target_domain..."
 
-    # 1. Clean Object Cache drop-ins
-    rm -f "${docroot}/wp-content/object-cache.php" 2>/dev/null || true
+    # 1. Purge legacy Redis config and drop-ins
+    purge_legacy_redis_config "$target_domain" "$docroot"
     rm -f "${docroot}/wp-content/advanced-cache.php" 2>/dev/null || true
-    rm -f "${docroot}/wp-content/.litespeed_conf.dat" 2>/dev/null || true
-    # 1b. Flush Redis DB for this site if allocated to immediately break deadlocks
-    local r_db
-    r_db=$(extract_wp_redis_db "${docroot}/wp-config.php" 2>/dev/null || true)
-    if [ -n "$r_db" ] && [ "$r_db" -gt 0 ] 2>/dev/null && command -v redis-cli >/dev/null 2>&1; then
-        redis-cli -n "$r_db" FLUSHDB >/dev/null 2>&1 || true
-        log_info "Flushed Redis Database $r_db for $target_domain."
-    fi
 
     # 2. Remove legacy .user.ini (aaPanel locks with chattr +i)
     if [ -f "${docroot}/.user.ini" ]; then
@@ -795,22 +722,8 @@ cmd_isolate_all() {
         local docroot
         docroot=$(detect_vhost_docroot "$domain" "$f" 2>/dev/null || echo "${wwwroot_dir}/${domain}")
 
-        local needs_redis_update=false
-        if [ -f "$docroot/wp-config.php" ]; then
-            if ! extract_wp_redis_db "$docroot/wp-config.php" >/dev/null 2>&1; then
-                needs_redis_update=true
-            fi
-        fi
-
         if [ "$is_already_isolated" = true ] && [ "$force" = false ]; then
-            if [ "$needs_redis_update" = true ]; then
-                log_info "Website $domain is isolated but missing Redis cache configuration. Updating..."
-                if cmd_isolate "$domain" "${args[@]}"; then
-                    count=$((count + 1))
-                fi
-            else
-                log_info "Website $domain is already fully isolated. (Use --force to re-apply)"
-            fi
+            log_info "Website $domain is already fully isolated. (Use --force to re-apply)"
             continue
         fi
 
