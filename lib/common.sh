@@ -146,20 +146,82 @@ optimize_global_php_config() {
     fi
 }
 
+detect_php_cli() {
+    if command -v php >/dev/null 2>&1; then
+        echo "php"
+        return 0
+    fi
+    for p in /usr/bin/php /usr/local/bin/php /www/server/php/*/bin/php /usr/local/lsws/lsphp*/bin/lsphp /usr/local/lsws/lsphp*/bin/php; do
+        if [ -x "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
 purge_legacy_redis_config() {
     local domain="$1"
     local docroot="${2:-/www/wwwroot/${domain}}"
     local wp_config="$docroot/wp-config.php"
 
     if [ -f "$wp_config" ]; then
+        # Ensure writable in case it was locked with chmod 440/400
+        chmod 640 "$wp_config" 2>/dev/null || true
+
+        # 1. Purge legacy tagged block
         if grep -q "WP-ISOLATE REDIS" "$wp_config" 2>/dev/null; then
             sed_i '/\/\* BEGIN WP-ISOLATE REDIS \*\//,/\/\* END WP-ISOLATE REDIS \*\//d' "$wp_config"
-            log_info "Purged legacy Redis configuration from $wp_config."
+            log_info "Purged legacy Redis configuration block from $wp_config."
+        fi
+
+        # 2. Aggressively purge any standalone or stray LSCache / Redis constants
+        if grep -qE "LITESPEED_CONF|WP_REDIS_|WP_CACHE_KEY_SALT" "$wp_config" 2>/dev/null; then
+            sed_i -E "/LITESPEED_CONF__OBJECT/d" "$wp_config"
+            sed_i -E "/LITESPEED_CONF/d" "$wp_config"
+            sed_i -E "/WP_REDIS_/d" "$wp_config"
+            sed_i -E "/WP_CACHE_KEY_SALT/d" "$wp_config"
+            log_info "Purged standalone LSCache/Redis constants from $wp_config."
         fi
     fi
 
-    # Unlink any legacy object cache drop-ins created by wp-isolate
+    # 3. Unlink any legacy object cache drop-ins created by wp-isolate
     rm -f "${docroot}/wp-content/object-cache.php" 2>/dev/null || true
     rm -f "${docroot}/wp-content/.litespeed_conf.dat" 2>/dev/null || true
+
+    # 4. If LiteSpeed Cache plugin is present, reset its database option so Object Cache is explicitly OFF
+    if [ -d "${docroot}/wp-content/plugins/litespeed-cache" ] && [ -f "${docroot}/wp-load.php" ]; then
+        local php_bin
+        php_bin=$(detect_php_cli 2>/dev/null || true)
+        if [ -n "$php_bin" ]; then
+            local reset_script="${docroot}/.wp-isolate-reset-lscache.php"
+            cat << 'EOF' > "$reset_script"
+<?php
+define('WP_USE_THEMES', false);
+$root = dirname(__FILE__);
+if (file_exists($root . '/wp-load.php')) {
+    try {
+        @require_once $root . '/wp-load.php';
+        if (function_exists('update_option')) {
+            update_option('litespeed.conf.cache-object', 0);
+            update_option('litespeed.conf.cache-object-db_id', 0);
+            update_option('litespeed.conf.cache-object-key_prefix', '');
+            $conf = get_option('litespeed-conf');
+            if (is_array($conf)) {
+                $conf['cache-object'] = 0;
+                $conf['cache-object-db_id'] = 0;
+                $conf['cache-object-key_prefix'] = '';
+                update_option('litespeed-conf', $conf);
+            }
+        }
+    } catch (\Throwable $e) {}
 }
+EOF
+            chmod 644 "$reset_script" 2>/dev/null || true
+            $php_bin "$reset_script" >/dev/null 2>&1 || true
+            rm -f "$reset_script" 2>/dev/null || true
+        fi
+    fi
+}
+
 
