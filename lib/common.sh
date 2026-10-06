@@ -170,16 +170,36 @@ purge_legacy_redis_config() {
         chattr -i "$wp_config" 2>/dev/null || true
         chmod 640 "$wp_config" 2>/dev/null || true
 
-        # 1. Purge legacy tagged block
-        if grep -q "WP-ISOLATE REDIS" "$wp_config" 2>/dev/null; then
-            sed_i '/BEGIN WP-ISOLATE REDIS/,/END WP-ISOLATE REDIS/d' "$wp_config"
-            log_info "Purged legacy Redis configuration block from $wp_config."
+        local py_bin=""
+        if command -v python3 >/dev/null 2>&1; then
+            py_bin="python3"
+        elif [ -x "/www/server/panel/pyenv/bin/python" ]; then
+            py_bin="/www/server/panel/pyenv/bin/python"
+        elif command -v python >/dev/null 2>&1; then
+            py_bin="python"
         fi
 
-        # 2. Aggressively purge any standalone or stray LSCache / Redis constants
-        if grep -qE "LITESPEED_CONF|WP_REDIS_|WP_CACHE_KEY_SALT" "$wp_config" 2>/dev/null; then
-            sed_i -E "/(LITESPEED_CONF|WP_REDIS_|WP_CACHE_KEY_SALT)/d" "$wp_config"
-            log_info "Purged standalone LSCache/Redis constants from $wp_config."
+        if [ -n "$py_bin" ]; then
+            "$py_bin" -c "
+import re, sys
+f = sys.argv[1]
+try:
+    with open(f, 'r', encoding='utf-8', errors='ignore') as fp:
+        c = fp.read()
+    c = re.sub(r'/\*\s*BEGIN WP-ISOLATE REDIS\s*\*.*?/\*\s*END WP-ISOLATE REDIS\s*\*/\r?\n?', '', c, flags=re.DOTALL)
+    c = re.sub(r'if\s*\(\s*!\s*defined\s*\(\s*[\x27\"](?:LITESPEED_CONF|WP_REDIS_|WP_CACHE_KEY_SALT)[^\)]+\)\s*\)\s*\{[^\}]*\}\r?\n?', '', c, flags=re.DOTALL)
+    c = re.sub(r'[ \t]*define\s*\(\s*[\x27\"](?:LITESPEED_CONF|WP_REDIS_|WP_CACHE_KEY_SALT)[^;]+;\r?\n?', '', c)
+    c = re.sub(r'\n{3,}', '\n\n', c)
+    with open(f, 'w', encoding='utf-8') as fp:
+        fp.write(c)
+except Exception:
+    pass
+" "$wp_config" 2>/dev/null || true
+            log_info "Cleaned legacy LSCache and Redis blocks from $wp_config via Python."
+        else
+            sed_i '/BEGIN WP-ISOLATE REDIS/,/END WP-ISOLATE REDIS/d' "$wp_config" 2>/dev/null || true
+            sed_i -E '/(LITESPEED_CONF|WP_REDIS_|WP_CACHE_KEY_SALT)/d' "$wp_config" 2>/dev/null || true
+            log_info "Cleaned legacy LSCache and Redis lines from $wp_config via sed."
         fi
     fi
 
