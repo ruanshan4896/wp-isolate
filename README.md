@@ -36,7 +36,7 @@ This project was built to completely resolve the two biggest problems when manag
 │  [ Layer 2: LSAPI suEXEC Process Isolation ]                                           │
 │   ├── extUser & extGroup: iso_<domain> (PHP processes run under isolated identities)   │
 │   ├── maxConns: 15 workers (A flooded site cannot exhaust the server's workers)        │
-│   └── memSoftLimit (400M) / memHardLimit (512M) (Prevents RAM exhaustion / OOM Crashes)│
+│   └── memSoftLimit / memHardLimit: 2047M (virtual memory headroom for 64-bit PHP)      │
 └────────────────────────────────────────────┬───────────────────────────────────────────┘
                                              │
                                              ▼
@@ -70,9 +70,9 @@ This project was built to completely resolve the two biggest problems when manag
 │   ├── Real-time 503 Auto-Healer clears stale sockets and restores services             │
 │   └── Rogue PHP Uploads Sanitizer quarantines unauthorized PHP files                   │
 │                                                                                        │
-│  [ Global PHP Tuning & OPcache JIT (PHP 8+) ]                                          │
-│   ├── Auto-activates OPcache JIT compiler (tracing, 64M) for PHP 8.0+                  │
-│   └── Optimizes upload_max_filesize = 256M, post_max_size = 256M, execution_time = 60 │
+│  [ Global PHP Tuning (PHP 8+) ]                                                        │
+│   ├── OPcache on, JIT disabled (PHP 8.4 JIT caused bogus 4GB allocations)              │
+│   └── memory_limit = 512M, upload/post_max_size = 256M, execution_time = 60           │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -110,7 +110,7 @@ Advanced resource limits configuration:
 ```bash
 wp-isolate isolate mywebsite.com \
   --max-conns 20 \
-  --mem-limit 512M \
+  --mem-limit 2047M \
   --db-limit 30 \
   --req-limit 15
 ```
@@ -136,19 +136,20 @@ wp-isolate status mywebsite.com
 ### 6. Clean stale cache & repair 503s (Clean)
 When a site is restored from an aaPanel backup or encounters 503 Service Unavailable:
 ```bash
-# Clean stale cache, remove .user.ini immutable lock, purge broken sockets, drop-ins and fix perms:
+# Remove legacy object-cache drop-ins, stale sockets and rogue uploads PHP, re-apply perms:
 wp-isolate clean mywebsite.com
 
 # Or clean and repair all websites on the server:
 wp-isolate clean all
 ```
+`clean` never touches LiteSpeed Cache's `advanced-cache.php` / `WP_CACHE` or aaPanel's `.user.ini`, and for a single site it only restarts that site's PHP workers.
 
 > [!NOTE]
-> **Pure 4-Layer Isolation (Decoupled from Redis Object Cache)**: When running `isolate`, `repair` or `clean`, `wp-isolate` automatically purges legacy Redis configuration blocks from `wp-config.php` and removes drop-in files (`object-cache.php`, `.litespeed_conf.dat`) that could trigger lock deadlocks or fatal errors when running 50+ websites. WordPress sites run with 100% stability relying on OpenLiteSpeed's ultra-fast native HTML Full-Page Cache (LSCache Page Cache) with zero Redis dependencies.
+> **Pure 4-Layer Isolation (no Redis)**: `isolate`, `repair` and `clean` remove legacy Redis blocks from `wp-config.php` and the `object-cache.php` / `.litespeed_conf.dat` drop-ins. Sites rely on OpenLiteSpeed's native LSCache page cache.
 
 ### 7. Unified Zero-Touch Sentinel Daemon
 A background daemon continuously performs 3 automated tasks:
-1. **Zero-Touch Auto-Isolation**: Detects new sites on aaPanel, waits for a 15s debounce settling window and verifies handshake to prevent race conditions during site creation.
+1. **Zero-Touch Auto-Isolation**: Detects new sites on aaPanel, waits for a 45s debounce settling window and verifies handshake to prevent race conditions during site creation.
 2. **Real-Time 503 Auto-Healer**: Automatically intercepts 503 errors and restores services.
 3. **Rogue PHP Uploads Sanitizer**: Regularly quarantines unauthorized PHP files inside uploads.
 
@@ -188,6 +189,16 @@ wp-isolate repair mywebsite.com
 wp-isolate repair
 ```
 
+### 10. Upgrading a server that ran an older (Redis) version
+Only needed once on servers that used the old Redis-based release:
+```bash
+cd /opt/wp-isolate && git pull origin master
+systemctl restart wp-isolate-sentinel
+wp-isolate isolate-all      # re-applies global PHP tuning (JIT off, memory_limit 512M)
+python3 lib/fix_all.py      # removes Redis leftovers, fixes wp-config ownership, flushes transients, health-checks every site
+```
+The last line of `fix_all.py` must read `N/N verified healthy`; any `[ALERT]` line is a real per-site error.
+
 ---
 
 ## Fail-Safe & Auto-Rollback
@@ -206,7 +217,7 @@ wp-isolate repair
 │   ├── wp-isolate               # Main CLI executable
 │   └── wp-isolate-sentinel      # Unified Sentinel daemon (auto-isolate, 503 heal & uploads shield)
 ├── lib/
-│   ├── common.sh                # Shared helpers, PHP JIT & global tuning, legacy cache cleanup
+│   ├── common.sh                # Shared helpers, global PHP tuning, legacy cache cleanup
 │   ├── os_user.sh               # Linux user & POSIX ACL isolation
 │   ├── ols_vhost.sh             # OpenLiteSpeed vhost & suEXEC controller
 │   └── mysql_limit.sh           # MySQL connection pool limit manager

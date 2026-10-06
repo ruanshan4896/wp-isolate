@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bin/wp-isolate-sentinel - Unified Background Sentinel for wp-isolate
 # Features:
-# 1. Zero-Touch Auto-Isolation with 15s Debounce & Handshake Verification
+# 1. Zero-Touch Auto-Isolation with 45s Debounce & Handshake Verification
 # 2. Real-time 503 Auto-Healer Daemon
 # 3. Rogue PHP Uploads Sanitizer
 set -eu
@@ -150,7 +150,7 @@ run_auto_isolation_monitor() {
                             log_sentinel "New site detected: ${domain}. Waiting for aaPanel creation to settle (countdown ${DEBOUNCE_SECONDS}s)..."
                         fi
                     else
-                        # File has settled for > 15 seconds. Verify handshake before isolating!
+                        # File has settled for > DEBOUNCE_SECONDS. Verify handshake before isolating!
                         if is_aapanel_site_ready "$domain"; then
                             log_sentinel "Handshake verified for ${domain}! aaPanel has finished site creation. Executing isolation now..."
                             rm -f "$tracking_file"

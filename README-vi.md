@@ -37,7 +37,7 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 │  [ Lớp 2: LSAPI suEXEC Process Isolation ]                                             │
 │   ├── extUser & extGroup: iso_<domain> (Tiến trình PHP chạy danh tính riêng)            │
 │   ├── maxConns: 15 workers (Một site bị flood không thể chiếm hết worker của server)   │
-│   └── memSoftLimit (400M) / memHardLimit (512M) (Chống cạn RAM / OOM Crash)            │
+│   └── memSoftLimit / memHardLimit: 2047M (đủ bộ nhớ ảo cho PHP 64-bit)                │
 └────────────────────────────────────────────┬───────────────────────────────────────────┘
                                              │
                                              ▼
@@ -71,9 +71,9 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
 │   ├── Tự động phát hiện 503 Service Unavailable, dọn dẹp socket kẹt và phục hồi site   │
 │   └── Tự động rà soát & cách ly file PHP độc hại trong uploads định kỳ                 │
 │                                                                                        │
-│  [ Global PHP Tuning & OPcache JIT (PHP 8+) ]                                          │
-│   ├── Tự động kích hoạt OPcache JIT compiler (tracing, 64M) cho PHP 8.0+               │
-│   └── Tối ưu upload_max_filesize = 256M, post_max_size = 256M, execution_time = 60    │
+│  [ Global PHP Tuning (PHP 8+) ]                                                        │
+│   ├── Bật OPcache, TẮT JIT (JIT của PHP 8.4 gây lỗi cấp phát 4GB ảo)                   │
+│   └── memory_limit = 512M, upload/post_max_size = 256M, execution_time = 60           │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -111,12 +111,12 @@ Tùy chỉnh hạn mức tài nguyên nâng cao:
 ```bash
 wp-isolate isolate mywebsite.com \
   --max-conns 20 \
-  --mem-limit 512M \
+  --mem-limit 2047M \
   --db-limit 30 \
   --req-limit 15
 ```
 - `--max-conns`: Số worker PHP tối đa đồng thời cho site (Mặc định: 15).
-- `--mem-limit`: Giới hạn RAM tối đa cho tiến trình (Mặc định: 512M).
+- `--mem-limit`: Giới hạn bộ nhớ ảo OpenLiteSpeed cho mỗi site (Mặc định: 2047M). RAM thực tế của WordPress do `WP_MEMORY_LIMIT` (256M) quản lý.
 - `--db-limit`: Số kết nối MySQL tối đa cho user database của site (Mặc định: 25).
 - `--req-limit`: Số request động/giây tối đa trên mỗi IP truy cập (Mặc định: 10 req/s).
 
@@ -142,19 +142,20 @@ Hiển thị đầy đủ thông tin: User Linux, số tiến trình PHP đang c
 ### 6. Khắc phục sự cố 503 & Dọn dẹp sau Restore (Clean)
 Khi vừa restore website từ bản sao lưu hoặc di chuyển dữ liệu gặp lỗi 503 Service Unavailable:
 ```bash
-# Sửa lỗi 503, gỡ chattr -i .user.ini, dọn socket, thanh lọc drop-in lỗi và phân quyền lại cho 1 site:
+# Xoá drop-in object-cache cũ, socket kẹt, file PHP lạ trong uploads và phân quyền lại cho 1 site:
 wp-isolate clean mywebsite.com
 
 # Hoặc dọn dẹp và sửa lỗi toàn bộ website trên server:
 wp-isolate clean all
 ```
+`clean` không đụng vào `advanced-cache.php` / `WP_CACHE` của LiteSpeed Cache hay `.user.ini` của aaPanel, và với 1 site thì chỉ khởi động lại PHP của riêng site đó.
 
 > [!NOTE]
-> **Mô hình Pure 4-Layer Isolation (Tách rời hoàn toàn Redis Object Cache)**: Khi chạy `isolate`, `repair` hoặc `clean`, `wp-isolate` sẽ tự động dọn sạch các block cấu hình Redis cũ trong `wp-config.php` và các drop-in (`object-cache.php`, `.litespeed_conf.dat`) từng gây lỗi treo deadlock fatal error khi chạy 50+ websites. Các website vận hành ổn định 100% nhờ bộ nhớ đệm trang Full-Page Cache gốc cực nhanh của OpenLiteSpeed mà không cần can thiệp tầng Object Cache của WordPress.
+> **Mô hình Pure 4-Layer Isolation (không Redis)**: `isolate`, `repair` và `clean` xoá các block Redis cũ trong `wp-config.php` và các drop-in `object-cache.php` / `.litespeed_conf.dat`. Website dùng page cache LSCache gốc của OpenLiteSpeed.
 
 ### 7. Vệ Binh Tự Động Hóa Toàn Diện (Zero-Touch Sentinel Daemon)
 Daemon chạy ngầm thống nhất đảm nhiệm 3 nhiệm vụ tự động:
-1. **Tự động cô lập website mới (Zero-Touch)**: Bắt sự kiện tạo site từ aaPanel, đệm lắng dịu 15 giây (Debounce) và kiểm tra bắt tay (Handshake check) để triệt tiêu 100% xung đột lúc tạo site.
+1. **Tự động cô lập website mới (Zero-Touch)**: Bắt sự kiện tạo site từ aaPanel, đợi 45 giây (Debounce) và kiểm tra bắt tay (Handshake check) để tránh xung đột lúc tạo site.
 2. **Auto-Healer 503**: Bắt lỗi 503 Service Unavailable thời gian thực trong error.log và tự phục hồi.
 3. **Uploads Sanitizer**: Định kỳ rà soát và cách ly các file `.php` độc hại xuất hiện trái phép trong uploads.
 
@@ -194,21 +195,15 @@ wp-isolate repair mywebsite.com
 wp-isolate repair
 ```
 
-### 7. Tự động khắc phục lỗi 503 sau khi Restore (Auto-Healer)
-Khi bạn giải nén mã nguồn hoặc dùng plugin khôi phục dữ liệu (như UpdraftPlus), mã nguồn thường bị sai quyền sở hữu hoặc mang theo các cấu hình cache cũ gây xung đột dẫn đến sập **lỗi 503 Service Unavailable**.
-
-**Khắc phục thủ công:**
+### 10. Nâng cấp server từng chạy bản cũ (có Redis)
+Chỉ cần chạy một lần trên server từng dùng bản cũ có Redis:
 ```bash
-wp-isolate clean mywebsite.com
+cd /opt/wp-isolate && git pull origin master
+systemctl restart wp-isolate-sentinel
+wp-isolate isolate-all      # áp lại cấu hình PHP: tắt JIT, memory_limit 512M
+python3 lib/fix_all.py      # dọn Redis cũ, sửa quyền wp-config, xoá transient, kiểm tra từng site
 ```
-Lệnh này sẽ dọn sạch cache rác (`object-cache.php`), bẻ khóa `.user.ini`, phân quyền lại và ép website hoạt động trở lại.
-
-**Tự động hóa hoàn toàn (Auto-Healer Daemon):**
-Kích hoạt Daemon chạy ngầm giám sát log của máy chủ. Khi phát hiện lỗi 503, nó sẽ tự động chạy lệnh `clean` trong 0.1 giây để ép website sống lại mà không cần bạn phải can thiệp:
-```bash
-wp-isolate healer enable
-```
-*(Lưu ý: Daemon này được tự động kích hoạt khi bạn chạy script cài đặt `install.sh`)*
+Dòng cuối của `fix_all.py` phải là `N/N verified healthy`; mọi dòng `[ALERT]` là lỗi thật của site đó.
 
 ---
 
@@ -228,7 +223,7 @@ wp-isolate healer enable
 │   ├── wp-isolate               # CLI thực thi chính
 │   └── wp-isolate-sentinel      # Daemon Sentinel tự động cô lập, sửa lỗi 503 & bảo vệ uploads
 ├── lib/
-│   ├── common.sh                # Helper dùng chung, JIT & tối ưu PHP toàn cục, dọn dẹp cache cũ
+│   ├── common.sh                # Helper dùng chung, tối ưu PHP toàn cục, dọn dẹp cache cũ
 │   ├── os_user.sh               # Quản lý Linux user & POSIX ACL
 │   ├── ols_vhost.sh             # Điều khiển cấu hình OpenLiteSpeed & suEXEC
 │   └── mysql_limit.sh           # Quản lý giới hạn kết nối MySQL

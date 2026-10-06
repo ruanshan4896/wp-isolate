@@ -40,11 +40,11 @@ for cmd in setfacl getfacl; do
 done
 
 # Setup and enable unified Zero-Touch Sentinel daemon (Auto-Isolate + 503 Healer + Upload Sanitizer)
-echo "[INFO] Activating Zero-Touch Sentinel daemon (15s Debounce & Handshake Verification)..."
+echo "[INFO] Activating Zero-Touch Sentinel daemon (45s Debounce & Handshake Verification)..."
 wp-isolate sentinel enable || true
 
 echo "===> Installation complete! Zero-Touch Protection is now ACTIVE."
-echo "     - Adding websites on aaPanel will automatically trigger isolation after 15s."
+echo "     - Adding websites on aaPanel will automatically trigger isolation after 45s."
 echo "     - PHP execution in wp-content/uploads/ is blocked natively by OpenLiteSpeed."
 echo "     - You can check status anytime with: wp-isolate sentinel status"
 wp-isolate --help || true

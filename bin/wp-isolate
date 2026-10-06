@@ -93,11 +93,10 @@ Core Commands:
   clean <domain|all>            Purge stale cache, broken sockets & lockfiles to resolve 503s
   scan <domain|all>             Scan and clean rogue PHP in uploads, inspect .user.ini
   sentinel <enable|disable|status> Manage unified zero-touch sentinel (auto-isolation & healing)
-  healer <enable|disable|status> Alias for sentinel daemon management
 
 Options for 'isolate':
   --max-conns <num>             Max concurrent PHP workers (Default: 15)
-  --mem-limit <size>            Max memory limit e.g. 512M (Default: 512M)
+  --mem-limit <size>            OpenLiteSpeed virtual memory limit per site (Default: 2047M)
   --db-limit <num>              Max MySQL connections for site DB user (Default: 25)
   --req-limit <num>             Max dynamic requests/sec per client IP (Default: 10)
   --docroot <path>              Override website document root path
@@ -189,8 +188,6 @@ cmd_isolate() {
             --mem-limit) mem_limit="$2"; shift 2 ;;
             --db-limit) db_limit="$2"; shift 2 ;;
             --req-limit) req_limit="$2"; shift 2 ;;
-            --redis-db) shift 2 ;; # Deprecated no-op
-            --no-redis) shift 1 ;; # Deprecated no-op
             --docroot) custom_docroot="$2"; shift 2 ;;
             -*) log_error "Unknown option: $1"; exit 1 ;;
             *)
@@ -462,7 +459,7 @@ EOF
             systemctl enable wp-isolate-sentinel.service
             systemctl restart wp-isolate-sentinel.service
             log_success "Zero-Touch Sentinel daemon is now ENABLED and active."
-            log_info "It automatically isolates new aaPanel sites (15s debounce), heals 503s, and sanitizes uploads!"
+            log_info "It automatically isolates new aaPanel sites (45s debounce), heals 503s, and sanitizes uploads!"
             ;;
         disable|stop)
             systemctl stop wp-isolate-sentinel.service 2>/dev/null || true
@@ -488,11 +485,6 @@ EOF
             exit 1
             ;;
     esac
-}
-
-cmd_healer() {
-    # Backward compatible alias for sentinel daemon
-    cmd_sentinel "$@"
 }
 
 scan_single_domain() {
@@ -659,11 +651,6 @@ cmd_clean() {
             done
         fi
 
-        # Pass 3: Python deep-cleaning of all wp-config.php files
-        if [ -f "${SCRIPT_DIR}/lib/purge_redis.py" ]; then
-            python3 "${SCRIPT_DIR}/lib/purge_redis.py" 2>/dev/null || /www/server/panel/pyenv/bin/python "${SCRIPT_DIR}/lib/purge_redis.py" 2>/dev/null || true
-        fi
-
         pkill -9 -f lsphp 2>/dev/null || true
         verify_and_reload_ols
         log_success "Cleaned $cleaned website(s)."
@@ -765,7 +752,6 @@ case "$ACTION" in
     clean)       cmd_clean "$@" ;;
     scan)        cmd_scan "$@" ;;
     sentinel)    cmd_sentinel "$@" ;;
-    healer)      cmd_healer "$@" ;;
     help|--help|-h) cmd_help ;;
     *)
         log_error "Unknown command: $ACTION"

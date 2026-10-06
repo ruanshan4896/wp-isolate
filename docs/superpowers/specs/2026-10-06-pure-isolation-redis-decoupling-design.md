@@ -52,7 +52,7 @@ Refactor `wp-isolate` into a **Pure 4-Layer Isolation System**:
 │  [ Layer 2: LSAPI suEXEC Process Isolation ]                                           │
 │   ├── extUser & extGroup: iso_<domain> (PHP runs under dedicated system identity)      │
 │   ├── maxConns: 15 workers (A flooded site cannot exhaust server worker pools)         │
-│   ├── memSoftLimit (400M) / memHardLimit (512M) (Prevents server OOM)                  │
+│   ├── memSoftLimit / memHardLimit: 2047M (64-bit PHP virtual memory headroom)        │
 │   └── max_execution_time = 60s (Prevents lingering hung workers)                       │
 └────────────────────────────────────────┬───────────────────────────────────────────────┘
                                          │
