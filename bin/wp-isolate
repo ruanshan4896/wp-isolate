@@ -667,6 +667,11 @@ cmd_clean() {
             done
         fi
 
+        # Pass 3: Python deep-cleaning of all wp-config.php files
+        if [ -f "${SCRIPT_DIR}/lib/purge_redis.py" ]; then
+            python3 "${SCRIPT_DIR}/lib/purge_redis.py" 2>/dev/null || /www/server/panel/pyenv/bin/python "${SCRIPT_DIR}/lib/purge_redis.py" 2>/dev/null || true
+        fi
+
         pkill -9 -f lsphp 2>/dev/null || true
         verify_and_reload_ols
         log_success "Cleaned $cleaned website(s)."
