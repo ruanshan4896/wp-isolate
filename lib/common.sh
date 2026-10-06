@@ -172,7 +172,7 @@ purge_legacy_redis_config() {
 
         # 1. Purge legacy tagged block
         if grep -q "WP-ISOLATE REDIS" "$wp_config" 2>/dev/null; then
-            sed_i '/\/\* BEGIN WP-ISOLATE REDIS \*\//,/\/\* END WP-ISOLATE REDIS \*\//d' "$wp_config"
+            sed_i '/BEGIN WP-ISOLATE REDIS/,/END WP-ISOLATE REDIS/d' "$wp_config"
             log_info "Purged legacy Redis configuration block from $wp_config."
         fi
 
