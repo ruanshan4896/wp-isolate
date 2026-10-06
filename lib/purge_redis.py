@@ -127,13 +127,22 @@ def main():
                     except Exception as e:
                         print(f"[WARN] Could not remove dropin {dropin_path}: {e}")
 
-            # Reset LiteSpeed Cache database option to 0 (Tắt)
-            lscache_dir = os.path.join(docroot, "wp-content", "plugins", "litespeed-cache")
+            # Reset LiteSpeed Cache & clean all corrupted transients across all sites
             wp_load = os.path.join(docroot, "wp-load.php")
-            if os.path.isdir(lscache_dir) and os.path.isfile(wp_load):
+            if os.path.isfile(wp_load):
                 reset_php = f"""<?php
 define('WP_USE_THEMES', false);
 @require_once '{wp_load}';
+if (isset($GLOBALS['wpdb'])) {{
+    $wpdb = $GLOBALS['wpdb'];
+    $wpdb->query("DELETE FROM {{$wpdb->options}} WHERE option_name LIKE '%_transient_%'");
+    if (function_exists('wp_clean_themes_cache')) {{
+        wp_clean_themes_cache();
+    }}
+    if (function_exists('wp_clean_plugins_cache')) {{
+        wp_clean_plugins_cache();
+    }}
+}}
 if (function_exists('update_option')) {{
     update_option('litespeed.conf.cache-object', 0);
     update_option('litespeed.conf.cache-object-db_id', 0);

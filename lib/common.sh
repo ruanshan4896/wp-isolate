@@ -99,6 +99,13 @@ optimize_global_php_config() {
             fi
         fi
         
+        # Tăng Memory Limit lên 512M
+        if ! grep -q "memory_limit.*=.*512M" "$ini" 2>/dev/null; then
+            sed_i '/^[[:space:]]*;*[[:space:]]*memory_limit[[:space:]]*=/d' "$ini"
+            echo "memory_limit = 512M" >> "$ini"
+            changed=true
+        fi
+        
         # Tăng Upload & Post max size
         if ! grep -q "upload_max_filesize.*=.*256M" "$ini" 2>/dev/null; then
             sed_i '/^[[:space:]]*;*[[:space:]]*upload_max_filesize[[:space:]]*=/d' "$ini"
