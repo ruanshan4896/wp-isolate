@@ -178,7 +178,7 @@ cmd_list() {
 cmd_isolate() {
     local domain=""
     local max_conns=15
-    local mem_limit="512M"
+    local mem_limit="2047M"
     local db_limit=25
     local req_limit=10
     local custom_docroot=""
@@ -386,7 +386,7 @@ cmd_repair() {
         local user
         user=$(get_site_user "$target_domain")
         local docroot="/www/wwwroot/${target_domain}"
-        isolate_ols_vhost "$target_domain" "$user" 15 "512M" 10 "$docroot"
+        isolate_ols_vhost "$target_domain" "$user" 15 "2047M" 10 "$docroot"
         apply_site_permissions "$target_domain" "$docroot"
         purge_legacy_redis_config "$target_domain" "$docroot"
         verify_and_reload_ols
@@ -420,7 +420,7 @@ cmd_repair() {
             local user
             user=$(get_site_user "$domain")
             local docroot="${wwwroot_dir}/${domain}"
-            isolate_ols_vhost "$domain" "$user" 15 "512M" 10 "$docroot"
+            isolate_ols_vhost "$domain" "$user" 15 "2047M" 10 "$docroot"
             apply_site_permissions "$domain" "$docroot"
             purge_legacy_redis_config "$domain" "$docroot"
         done

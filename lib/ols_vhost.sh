@@ -86,17 +86,22 @@ isolate_ols_vhost() {
     local domain="$1"
     local user="$2"
     local max_conns="${3:-15}"
-    local mem_limit="${4:-512M}"
+    local mem_limit="${4:-2047M}"
     local req_limit="${5:-10}"
     local docroot="${6:-/www/wwwroot/${domain}}"
     local vhost_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
     local outer_file="${vhost_dir}/${domain}.conf"
     local detail_file="${vhost_dir}/detail/${domain}.conf"
 
-    # Memory and process limits
-    local mem_num="${mem_limit%M}"
-    local mem_soft="$((mem_num * 80 / 100))M"
-    local mem_hard="${mem_limit}"
+    # Memory and process limits (OpenLiteSpeed RLIMIT_AS)
+    # Default 2047M prevents 64-bit PHP virtual memory address space exhaustion / OOM crashes
+    local mem_soft="2047M"
+    local mem_hard="2047M"
+    if [ -n "$mem_limit" ] && [ "$mem_limit" != "2047M" ]; then
+        local mem_num="${mem_limit%M}"
+        mem_soft="$((mem_num * 80 / 100))M"
+        mem_hard="${mem_limit}"
+    fi
     local proc_soft="$((max_conns + 5))"
     local proc_hard="$((max_conns * 2))"
 
