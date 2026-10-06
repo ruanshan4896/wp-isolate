@@ -107,7 +107,7 @@ Examples:
   wp-isolate isolate example.com --max-conns 20 --mem-limit 512M
   wp-isolate restore example.com
   wp-isolate clean example.com
-  wp-isolate healer enable
+  wp-isolate sentinel enable
   wp-isolate status example.com
 EOF
 }

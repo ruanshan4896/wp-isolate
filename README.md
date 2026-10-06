@@ -204,8 +204,7 @@ wp-isolate repair
 /opt/wp-isolate/
 ├── bin/
 │   ├── wp-isolate               # Main CLI executable
-│   ├── wp-isolate-sentinel      # Unified Sentinel daemon (auto-isolate, 503 heal & uploads shield)
-│   └── wp-isolate-healer        # Backward-compatibility alias for sentinel
+│   └── wp-isolate-sentinel      # Unified Sentinel daemon (auto-isolate, 503 heal & uploads shield)
 ├── lib/
 │   ├── common.sh                # Shared helpers, PHP JIT & global tuning, legacy cache cleanup
 │   ├── os_user.sh               # Linux user & POSIX ACL isolation

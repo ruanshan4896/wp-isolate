@@ -27,8 +27,9 @@ mkdir -p "${INSTALL_DIR}/data" "${INSTALL_DIR}/backups" "${INSTALL_DIR}/vhosts"
 
 chmod +x "${INSTALL_DIR}/bin/wp-isolate" "${INSTALL_DIR}/bin/wp-isolate-sentinel" 2>/dev/null || true
 
-# Create system symlink
+# Create system symlinks
 ln -sf "${INSTALL_DIR}/bin/wp-isolate" "$BIN_LINK"
+ln -sf "${INSTALL_DIR}/bin/wp-isolate-sentinel" "/usr/local/bin/wp-isolate-sentinel"
 
 # Install dependencies if missing
 for cmd in setfacl getfacl; do

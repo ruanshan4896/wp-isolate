@@ -226,8 +226,7 @@ wp-isolate healer enable
 /opt/wp-isolate/
 ├── bin/
 │   ├── wp-isolate               # CLI thực thi chính
-│   ├── wp-isolate-sentinel      # Daemon Sentinel tự động cô lập, sửa lỗi 503 & bảo vệ uploads
-│   └── wp-isolate-healer        # Alias tương thích ngược cho sentinel
+│   └── wp-isolate-sentinel      # Daemon Sentinel tự động cô lập, sửa lỗi 503 & bảo vệ uploads
 ├── lib/
 │   ├── common.sh                # Helper dùng chung, JIT & tối ưu PHP toàn cục, dọn dẹp cache cũ
 │   ├── os_user.sh               # Quản lý Linux user & POSIX ACL
