@@ -111,10 +111,32 @@ def main():
                     with open(f, "w", encoding="utf-8") as fp:
                         fp.writelines(aggressive_lines)
                     print(f"[OK] Aggressively cleaned constants in: {f}")
-                else:
-                    print(f"[OK] Cleaned constants in: {f}")
-
                 cleaned_count += 1
+
+            # Restore isolated owner & write permissions so LiteSpeed Cache can modify WP_CACHE
+            try:
+                import pwd
+                docroot_stat = os.stat(docroot)
+                site_user = pwd.getpwuid(docroot_stat.st_uid).pw_name
+                if not site_user.startswith("iso_") and site_user != "www":
+                    clean_name = re.sub(r'[^a-z0-9]', '_', domain.lower())
+                    clean_name = re.sub(r'_+', '_', clean_name).strip('_')
+                    candidate = f"iso_{clean_name}"[:32]
+                    try:
+                        pwd.getpwnam(candidate)
+                        site_user = candidate
+                    except KeyError:
+                        site_user = "www"
+                if site_user:
+                    u_info = pwd.getpwnam(site_user)
+                    os.chown(f, u_info.pw_uid, u_info.pw_gid)
+                    os.chmod(f, 0o664)
+                    subprocess.run(["setfacl", "-m", "u:www:rw", f], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                try:
+                    os.chmod(f, 0o664)
+                except Exception:
+                    pass
 
             # Remove object-cache.php and .litespeed_conf.dat drop-ins
             for dropin in ["object-cache.php", ".litespeed_conf.dat"]:
