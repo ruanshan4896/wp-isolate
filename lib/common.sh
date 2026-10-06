@@ -85,16 +85,19 @@ optimize_global_php_config() {
             changed=true
         fi
         
-        # JIT Compiler (Only valid for PHP 8+)
+        # JIT Compiler: keep DISABLED.
+        # opcache.jit=tracing on PHP 8.4 produced bogus 4GB allocations
+        # ("tried to allocate 4295229440 bytes" in wp-includes/theme.php:325) on several sites.
+        # WordPress is I/O-bound, so JIT brings almost no gain; plain OPcache keeps the speed-up.
         if [[ "$ini" =~ (lsphp8|php\/8|php8) ]]; then
-            if ! grep -q "opcache.jit[[:space:]]*=.*tracing" "$ini" 2>/dev/null; then
+            if ! grep -qE "^[[:space:]]*opcache\.jit[[:space:]]*=[[:space:]]*disable" "$ini" 2>/dev/null; then
                 sed_i '/^[[:space:]]*;*[[:space:]]*opcache\.jit[[:space:]]*=/d' "$ini"
-                echo "opcache.jit = tracing" >> "$ini"
+                echo "opcache.jit = disable" >> "$ini"
                 changed=true
             fi
-            if ! grep -q "opcache.jit_buffer_size.*=.*64M" "$ini" 2>/dev/null; then
+            if ! grep -qE "^[[:space:]]*opcache\.jit_buffer_size[[:space:]]*=[[:space:]]*0" "$ini" 2>/dev/null; then
                 sed_i '/^[[:space:]]*;*[[:space:]]*opcache\.jit_buffer_size[[:space:]]*=/d' "$ini"
-                echo "opcache.jit_buffer_size = 64M" >> "$ini"
+                echo "opcache.jit_buffer_size = 0" >> "$ini"
                 changed=true
             fi
         fi
