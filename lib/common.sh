@@ -166,7 +166,8 @@ purge_legacy_redis_config() {
     local wp_config="$docroot/wp-config.php"
 
     if [ -f "$wp_config" ]; then
-        # Ensure writable in case it was locked with chmod 440/400
+        # Unlock if immutable (aaPanel anti-tamper or chattr +i)
+        chattr -i "$wp_config" 2>/dev/null || true
         chmod 640 "$wp_config" 2>/dev/null || true
 
         # 1. Purge legacy tagged block
@@ -177,10 +178,7 @@ purge_legacy_redis_config() {
 
         # 2. Aggressively purge any standalone or stray LSCache / Redis constants
         if grep -qE "LITESPEED_CONF|WP_REDIS_|WP_CACHE_KEY_SALT" "$wp_config" 2>/dev/null; then
-            sed_i -E "/LITESPEED_CONF__OBJECT/d" "$wp_config"
-            sed_i -E "/LITESPEED_CONF/d" "$wp_config"
-            sed_i -E "/WP_REDIS_/d" "$wp_config"
-            sed_i -E "/WP_CACHE_KEY_SALT/d" "$wp_config"
+            sed_i -E "/(LITESPEED_CONF|WP_REDIS_|WP_CACHE_KEY_SALT)/d" "$wp_config"
             log_info "Purged standalone LSCache/Redis constants from $wp_config."
         fi
     fi
