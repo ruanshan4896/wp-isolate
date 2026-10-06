@@ -63,29 +63,15 @@ Dự án được xây dựng nhằm giải quyết triệt để 2 vấn đề 
                                              │
                                              ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ Redis Object Cache Isolation                                                           │
-│                                                                                        │
-│  [ Lớp 5: Database ID & Cache Key Salt Isolation ]                                     │
-│   ├── Auto-Scaling: Tự động nâng số databases từ 16 lên 256 trong redis.conf           │
-│   ├── Auto-Allocation & Re-use: Cấp phát Database ID (1..255) và bảo lưu nguyên vẹn ID │
-│   │   khi chạy lại / cô lập hàng loạt (tránh mất cache đang hoạt động)                 │
-│   ├── wp-config.php: Tự động tiêm WP_REDIS_DATABASE & WP_CACHE_KEY_SALT                │
-│   ├── LiteSpeed Cache Sync: Tự động đồng bộ Database ID & Key Prefix vào thẳng plugin  │
-│   │   LiteSpeed Cache (LSCWP), sinh drop-in & .litespeed_conf.dat tự động              │
-│   └── Chống đè cache tuyệt đối (Zero Cache Collision) nhờ tiền tố Salt theo từng domain │
-└────────────────────────────────────────────┬───────────────────────────────────────────┘
-                                             │
-                                             ▼
-┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ Zero-Touch Sentinel & Global Performance                                               │
 │                                                                                        │
-│  [ Lớp 6: Zero-Touch Sentinel Daemon (15s Debounce & Handshake Verification) ]         │
-│   ├── Tự động phát hiện site mới trên aaPanel, chờ 15s lắng dịu rồi tự động cô lập     │
+│  [ Sentinel Daemon (45s Debounce & Handshake Verification) ]                           │
+│   ├── Tự động phát hiện site mới trên aaPanel, chờ 45s lắng dịu rồi tự động cô lập     │
 │   ├── Bắt tay xác minh (Handshake Check) triệt tiêu 100% xung đột lúc tạo site         │
 │   ├── Tự động phát hiện 503 Service Unavailable, dọn dẹp socket kẹt và phục hồi site   │
 │   └── Tự động rà soát & cách ly file PHP độc hại trong uploads định kỳ                 │
 │                                                                                        │
-│  [ Lớp 7: Global PHP Tuning & OPcache JIT (PHP 8+) ]                                   │
+│  [ Global PHP Tuning & OPcache JIT (PHP 8+) ]                                          │
 │   ├── Tự động kích hoạt OPcache JIT compiler (tracing, 64M) cho PHP 8.0+               │
 │   └── Tối ưu upload_max_filesize = 256M, post_max_size = 256M, execution_time = 60    │
 └────────────────────────────────────────────────────────────────────────────────────────┘
@@ -133,17 +119,13 @@ wp-isolate isolate mywebsite.com \
 - `--mem-limit`: Giới hạn RAM tối đa cho tiến trình (Mặc định: 512M).
 - `--db-limit`: Số kết nối MySQL tối đa cho user database của site (Mặc định: 25).
 - `--req-limit`: Số request động/giây tối đa trên mỗi IP truy cập (Mặc định: 10 req/s).
-- `--redis-db`: Chỉ định Redis Database ID thủ công (Mặc định: tự động cấp phát 1..63).
-- `--no-redis`: Bỏ qua cấu hình Redis Cache cho website.
 
 ### 3. Cô lập hàng loạt tất cả các site
-Tự động quét và cô lập mọi website đang chạy chung user mặc định `www` hoặc chưa có cấu hình Redis Cache:
+Tự động quét và cô lập mọi website đang chạy chung user mặc định `www`:
 ```bash
 wp-isolate isolate-all
 ```
-- **Tự động bảo lưu (Reuse) Redis DB ID**: Các website đã được cô lập trước đó sẽ được giữ nguyên hoàn toàn (bao gồm Database ID trong `wp-config.php`), chỉ cấp ID mới cho các site vừa thêm vào.
-- **Không bao giờ lộn cache**: Nhờ `WP_CACHE_KEY_SALT` tiền tố duy nhất theo domain, mọi site đều được bảo vệ độc lập, không lo cache cũ bị đè hay đọc nhầm.
-- **Tùy chọn `--force`**: Thêm cờ `--force` (`wp-isolate isolate-all --force`) nếu bạn muốn áp đặt lại toàn bộ cấu hình suEXEC/OLS cho tất cả các site mà vẫn bảo lưu nguyên vẹn Database ID Redis hiện tại của từng site.
+- **Tùy chọn `--force`**: Thêm cờ `--force` (`wp-isolate isolate-all --force`) nếu bạn muốn áp đặt lại toàn bộ cấu hình suEXEC/OLS cho tất cả các site.
 
 ### 4. Khôi phục về mặc định (Rollback / Restore)
 Nếu muốn hoàn tác trạng thái cô lập và trả website về quyền `www:www` mặc định của aaPanel:
@@ -155,17 +137,20 @@ wp-isolate restore mywebsite.com
 ```bash
 wp-isolate status mywebsite.com
 ```
-Hiển thị đầy đủ thông tin: User Linux, số tiến trình PHP đang chạy thực tế, socket, mức RAM giới hạn, số kết nối MySQL, Redis Database ID / Key Salt, và trạng thái đồng bộ LiteSpeed Cache.
+Hiển thị đầy đủ thông tin: User Linux, số tiến trình PHP đang chạy thực tế, socket, mức RAM giới hạn, số kết nối MySQL, và trạng thái cấu hình OpenLiteSpeed.
 
 ### 6. Khắc phục sự cố 503 & Dọn dẹp sau Restore (Clean)
 Khi vừa restore website từ bản sao lưu hoặc di chuyển dữ liệu gặp lỗi 503 Service Unavailable:
 ```bash
-# Sửa lỗi 503, gỡ chattr -i .user.ini, dọn socket và phân quyền lại cho 1 site:
+# Sửa lỗi 503, gỡ chattr -i .user.ini, dọn socket, thanh lọc drop-in lỗi và phân quyền lại cho 1 site:
 wp-isolate clean mywebsite.com
 
 # Hoặc dọn dẹp và sửa lỗi toàn bộ website trên server:
 wp-isolate clean all
 ```
+
+> [!NOTE]
+> **Mô hình Pure 4-Layer Isolation (Tách rời hoàn toàn Redis Object Cache)**: Khi chạy `isolate`, `repair` hoặc `clean`, `wp-isolate` sẽ tự động dọn sạch các block cấu hình Redis cũ trong `wp-config.php` và các drop-in (`object-cache.php`, `.litespeed_conf.dat`) từng gây lỗi treo deadlock fatal error khi chạy 50+ websites. Các website vận hành ổn định 100% nhờ bộ nhớ đệm trang Full-Page Cache gốc cực nhanh của OpenLiteSpeed mà không cần can thiệp tầng Object Cache của WordPress.
 
 ### 7. Vệ Binh Tự Động Hóa Toàn Diện (Zero-Touch Sentinel Daemon)
 Daemon chạy ngầm thống nhất đảm nhiệm 3 nhiệm vụ tự động:
@@ -241,21 +226,13 @@ wp-isolate healer enable
 /opt/wp-isolate/
 ├── bin/
 │   ├── wp-isolate               # CLI thực thi chính
-│   └── wp-isolate-healer        # Daemon tự động phục hồi lỗi 503 thời gian thực
+│   ├── wp-isolate-sentinel      # Daemon Sentinel tự động cô lập, sửa lỗi 503 & bảo vệ uploads
+│   └── wp-isolate-healer        # Alias tương thích ngược cho sentinel
 ├── lib/
-<<<<<<< HEAD
-│   ├── common.sh                # Helper dùng chung, JIT & tối ưu PHP toàn cục
+│   ├── common.sh                # Helper dùng chung, JIT & tối ưu PHP toàn cục, dọn dẹp cache cũ
 │   ├── os_user.sh               # Quản lý Linux user & POSIX ACL
 │   ├── ols_vhost.sh             # Điều khiển cấu hình OpenLiteSpeed & suEXEC
-│   ├── mysql_limit.sh           # Quản lý giới hạn kết nối MySQL
-│   └── redis_isolate.sh         # Quản lý cô lập Redis Object Cache (DB ID & Salt)
-=======
-│   ├── common.sh                # Helper dùng chung, cấu hình PHP toàn cầu
-│   ├── os_user.sh               # Quản lý Linux user & POSIX ACL
-│   ├── ols_vhost.sh             # Điều khiển cấu hình OpenLiteSpeed & suEXEC
-│   ├── mysql_limit.sh           # Quản lý giới hạn kết nối MySQL
-│   └── redis_isolate.sh         # Quản lý cô lập Redis Object Cache
->>>>>>> f09c7c0 (fix(redis): prevent deadlocks by disabling object-admin/persistent, scaling DBs to 256, adding 30s timeout and volatile-lru eviction)
+│   └── mysql_limit.sh           # Quản lý giới hạn kết nối MySQL
 ├── backups/                     # Thư mục lưu trữ backup tự động
 ├── data/
 │   └── sites.json               # Cơ sở dữ liệu registry trạng thái hệ thống

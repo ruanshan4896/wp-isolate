@@ -62,26 +62,15 @@ This project was built to completely resolve the two biggest problems when manag
                                              │
                                              ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ Redis Object Cache Isolation                                                           │
-│                                                                                        │
-│  [ Layer 5: Database ID & Cache Key Salt Isolation ]                                   │
-│   ├── Auto-Scaling: Automatically increases max databases from 16 to 256 in redis.conf │
-│   ├── Auto-Allocation & Re-use: Allocates Database IDs (1..255) and preserves them     │
-│   ├── LiteSpeed Cache Sync: Auto generates drop-in & .litespeed_conf.dat               │
-│   └── Zero Cache Collision via unique Key Salt prefixes per domain                     │
-└────────────────────────────────────────────┬───────────────────────────────────────────┘
-                                             │
-                                             ▼
-┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ Zero-Touch Sentinel & Global Performance                                               │
 │                                                                                        │
-│  [ Layer 6: Zero-Touch Sentinel Daemon (15s Debounce & Handshake Verification) ]       │
-│   ├── Auto-detects new aaPanel websites, settles for 15s, then isolates automatically  │
+│  [ Sentinel Daemon (45s Debounce & Handshake Verification) ]                           │
+│   ├── Auto-detects new aaPanel websites, settles for 45s, then isolates automatically  │
 │   ├── Handshake checks eliminate race conditions during aaPanel site creation          │
 │   ├── Real-time 503 Auto-Healer clears stale sockets and restores services             │
 │   └── Rogue PHP Uploads Sanitizer quarantines unauthorized PHP files                   │
 │                                                                                        │
-│  [ Layer 7: Global PHP Tuning & OPcache JIT (PHP 8+) ]                                 │
+│  [ Global PHP Tuning & OPcache JIT (PHP 8+) ]                                          │
 │   ├── Auto-activates OPcache JIT compiler (tracing, 64M) for PHP 8.0+                  │
 │   └── Optimizes upload_max_filesize = 256M, post_max_size = 256M, execution_time = 60 │
 └────────────────────────────────────────────────────────────────────────────────────────┘
@@ -131,7 +120,7 @@ Automatically scan and isolate all websites currently running under the default 
 ```bash
 wp-isolate isolate-all
 ```
-- **Force Re-apply**: Add the `--force` flag (`wp-isolate isolate-all --force`) to force re-apply the suEXEC/OLS configuration for all sites while preserving their current Redis Database IDs.
+- **Force Re-apply**: Add the `--force` flag (`wp-isolate isolate-all --force`) to force re-apply the suEXEC/OLS configuration for all sites.
 
 ### 4. Rollback / Restore
 If you want to revert the isolation state and restore the website to the default aaPanel `www:www` permissions:
@@ -147,12 +136,15 @@ wp-isolate status mywebsite.com
 ### 6. Clean stale cache & repair 503s (Clean)
 When a site is restored from an aaPanel backup or encounters 503 Service Unavailable:
 ```bash
-# Clean stale cache, remove .user.ini immutable lock, purge broken sockets and fix perms:
+# Clean stale cache, remove .user.ini immutable lock, purge broken sockets, drop-ins and fix perms:
 wp-isolate clean mywebsite.com
 
 # Or clean and repair all websites on the server:
 wp-isolate clean all
 ```
+
+> [!NOTE]
+> **Pure 4-Layer Isolation (Decoupled from Redis Object Cache)**: When running `isolate`, `repair` or `clean`, `wp-isolate` automatically purges legacy Redis configuration blocks from `wp-config.php` and removes drop-in files (`object-cache.php`, `.litespeed_conf.dat`) that could trigger lock deadlocks or fatal errors when running 50+ websites. WordPress sites run with 100% stability relying on OpenLiteSpeed's ultra-fast native HTML Full-Page Cache (LSCache Page Cache) with zero Redis dependencies.
 
 ### 7. Unified Zero-Touch Sentinel Daemon
 A background daemon continuously performs 3 automated tasks:
@@ -212,13 +204,13 @@ wp-isolate repair
 /opt/wp-isolate/
 ├── bin/
 │   ├── wp-isolate               # Main CLI executable
-│   └── wp-isolate-healer        # Real-time 503 auto-healing background daemon
+│   ├── wp-isolate-sentinel      # Unified Sentinel daemon (auto-isolate, 503 heal & uploads shield)
+│   └── wp-isolate-healer        # Backward-compatibility alias for sentinel
 ├── lib/
-│   ├── common.sh                # Shared helpers, PHP JIT & global tuning
+│   ├── common.sh                # Shared helpers, PHP JIT & global tuning, legacy cache cleanup
 │   ├── os_user.sh               # Linux user & POSIX ACL isolation
 │   ├── ols_vhost.sh             # OpenLiteSpeed vhost & suEXEC controller
-│   ├── mysql_limit.sh           # MySQL connection pool limit manager
-│   └── redis_isolate.sh         # Redis Object Cache isolation (DB ID & Salt)
+│   └── mysql_limit.sh           # MySQL connection pool limit manager
 ├── backups/                     # Pre-flight automatic backups
 ├── data/
 │   └── sites.json               # System state registry database
