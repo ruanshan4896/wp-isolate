@@ -37,6 +37,10 @@ define('WP_USE_THEMES', false);
 require_once '{wp_load}';
 """
 
+def sanitize_domain_to_user(domain):
+    clean_name = re.sub(r'[^a-z0-9]+', '_', domain.lower()).strip('_')
+    return f"iso_{clean_name}"[:31].rstrip('_')
+
 def detect_site_user(docroot, domain):
     try:
         u = pwd.getpwuid(os.stat(docroot).st_uid).pw_name
@@ -44,8 +48,7 @@ def detect_site_user(docroot, domain):
             return u
     except Exception:
         pass
-    clean_name = re.sub(r'[^a-z0-9]', '_', domain.lower()).strip('_')
-    candidate = f"iso_{clean_name}"[:32]
+    candidate = sanitize_domain_to_user(domain)
     try:
         pwd.getpwnam(candidate)
         return candidate
@@ -138,8 +141,7 @@ def main():
                 pass
 
             if not site_user.startswith("iso_") and site_user != "www":
-                clean_name = re.sub(r'[^a-z0-9]', '_', domain.lower()).strip('_')
-                candidate = f"iso_{clean_name}"[:32]
+                candidate = sanitize_domain_to_user(domain)
                 try:
                     pwd.getpwnam(candidate)
                     site_user = candidate

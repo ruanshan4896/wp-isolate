@@ -20,6 +20,13 @@ set_mysql_user_limit() {
         return 0
     fi
 
+    case "$db_user" in
+        root|debian-sys-maint|mysql.sys|mysql.session|mysql.infoschema)
+            log_warn "Refusing to apply connection limits to administrative MySQL user: $db_user"
+            return 0
+            ;;
+    esac
+
     if ! command -v mysql >/dev/null 2>&1; then
         log_warn "mysql client command not available. Skipping database connection limit."
         return 0
@@ -38,6 +45,12 @@ remove_mysql_user_limit() {
     if [ -z "$db_user" ]; then
         return 0
     fi
+
+    case "$db_user" in
+        root|debian-sys-maint|mysql.sys|mysql.session|mysql.infoschema)
+            return 0
+            ;;
+    esac
 
     if ! command -v mysql >/dev/null 2>&1; then
         return 0

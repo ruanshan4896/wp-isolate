@@ -71,6 +71,9 @@ apply_site_permissions() {
     # Restrict sensitive config files (wp-config.php, .env)
     for conf_file in "$docroot/wp-config.php" "$docroot/.env"; do
         if [ -f "$conf_file" ]; then
+            # Handle immutable attribute (aaPanel Anti-Tamper or chattr +i)
+            chattr -i "$conf_file" 2>/dev/null || true
+
             if [ "$(basename "$conf_file")" = "wp-config.php" ]; then
                 if ! grep -q "'FS_METHOD'" "$conf_file"; then
                     local block="

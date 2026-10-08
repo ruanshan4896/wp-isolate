@@ -38,6 +38,40 @@ EOF
     status_out=$(AAPANEL_OLS_VHOST_DIR="${tmp_base}/www/server/panel/vhost/openlitespeed" AAPANEL_WWWROOT_DIR="${tmp_base}/www/wwwroot" WP_ISOLATE_DIR="${tmp_base}/opt/wp-isolate" bash "${SCRIPT_DIR}/bin/wp-isolate" status mytest.com)
     echo "$status_out" | grep -q "DEFAULT" || { echo "Expected DEFAULT status before isolation"; exit 1; }
 
+    # Set up isolated configuration format (outer setUIDMode 2 + detail extUser & WP-ISOLATE)
+    mkdir -p "${tmp_base}/www/server/panel/vhost/openlitespeed/detail"
+    cat << 'EOF' > "${tmp_base}/www/server/panel/vhost/openlitespeed/mytest.com.conf"
+virtualhost mytest.com {
+  setUIDMode 2
+}
+EOF
+    cat << 'EOF' > "${tmp_base}/www/server/panel/vhost/openlitespeed/detail/mytest.com.conf"
+extprocessor lsphp81 {
+  extUser iso_mytest_com
+  extGroup iso_mytest_com
+  maxConns 15
+}
+### BEGIN WP-ISOLATE: mytest.com ###
+perClientConnLimit 25
+### END WP-ISOLATE: mytest.com ###
+EOF
+
+    # Test status command on isolated site
+    local status_iso_out
+    status_iso_out=$(AAPANEL_OLS_VHOST_DIR="${tmp_base}/www/server/panel/vhost/openlitespeed" AAPANEL_WWWROOT_DIR="${tmp_base}/www/wwwroot" WP_ISOLATE_DIR="${tmp_base}/opt/wp-isolate" bash "${SCRIPT_DIR}/bin/wp-isolate" status mytest.com)
+    echo "$status_iso_out" | grep -q "Status:              ISOLATED" || { echo "Expected ISOLATED status in status output, got:\n$status_iso_out"; exit 1; }
+
+    # Test verify detects configuration drift
+    # Break detail conf by removing WP-ISOLATE
+    cat << 'EOF' > "${tmp_base}/www/server/panel/vhost/openlitespeed/detail/mytest.com.conf"
+extprocessor lsphp81 {
+  extUser iso_mytest_com
+}
+EOF
+    local verify_out
+    verify_out=$(AAPANEL_OLS_VHOST_DIR="${tmp_base}/www/server/panel/vhost/openlitespeed" AAPANEL_WWWROOT_DIR="${tmp_base}/www/wwwroot" WP_ISOLATE_DIR="${tmp_base}/opt/wp-isolate" bash "${SCRIPT_DIR}/bin/wp-isolate" verify 2>&1 || true)
+    echo "$verify_out" | grep -q "Configuration drift detected" || { echo "Expected verify to detect configuration drift, got:\n$verify_out"; exit 1; }
+
     # Test legacy Redis block purge via clean command
     cat << 'EOF' >> "${tmp_base}/www/wwwroot/mytest.com/wp-config.php"
 

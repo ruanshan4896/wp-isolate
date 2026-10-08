@@ -232,8 +232,9 @@ cmd_isolate() {
     timestamp=$(date +%Y%m%d%H%M%S)
     local backup_dir="${BACKUPS_DIR}/${domain}/${timestamp}"
     mkdir -p "$backup_dir"
-    local outer_file="/www/server/panel/vhost/openlitespeed/${domain}.conf"
-    local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+    local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+    local outer_file="${vhost_panel_dir}/${domain}.conf"
+    local detail_file="${vhost_panel_dir}/detail/${domain}.conf"
     [ -f "$outer_file" ] && cp "$outer_file" "${backup_dir}/vhost.conf"
     [ -f "$detail_file" ] && cp "$detail_file" "${backup_dir}/detail.conf"
     log_info "Saved pre-flight backup to ${backup_dir}/"
@@ -324,16 +325,24 @@ cmd_status() {
     vhost_file=$(detect_ols_vhost_file "$domain" 2>/dev/null || true)
     local docroot
     docroot=$(detect_vhost_docroot "$domain" "$vhost_file" 2>/dev/null || echo "${AAPANEL_WWWROOT_DIR:-/www/wwwroot}/${domain}")
+    local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+    local outer_file="${vhost_panel_dir}/${domain}.conf"
+    local detail_file="${vhost_panel_dir}/detail/${domain}.conf"
 
     echo "=========================================================="
     echo "  ISOLATION STATUS FOR: ${domain}"
     echo "=========================================================="
-    if [ -n "$vhost_file" ] && grep -q "WP-ISOLATE: ${domain}" "$vhost_file" 2>/dev/null; then
+    local is_isolated=false
+    if ([ -f "$detail_file" ] && grep -qE "extUser\s+iso_|WP-ISOLATE" "$detail_file" 2>/dev/null) || \
+       ([ -f "$outer_file" ] && grep -qE "setUIDMode\s+2|WP-ISOLATE" "$outer_file" 2>/dev/null); then
+        is_isolated=true
+    fi
+
+    if [ "$is_isolated" = true ]; then
         echo "Status:              ISOLATED"
         echo "Linux User:          $user"
         echo "Document Root:       $docroot"
-        echo "VHost Config:        $vhost_file"
-        local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
+        echo "VHost Config:        ${vhost_file:-$outer_file}"
         if [ -f "$detail_file" ]; then
             echo "Isolated Config:     $detail_file"
             echo "Max PHP Conns:       $(grep -E "^\s*maxConns" "$detail_file" | awk '{print $2}' || echo "-")"
@@ -342,8 +351,8 @@ cmd_status() {
             echo "Dyn Req/Sec:         $(grep 'dynReqPerSec' "$detail_file" | awk '{print $2}' || echo "-")"
         fi
         local active_workers
-        active_workers=$(pgrep -u "$user" 2>/dev/null | wc -l || echo "0")
-        echo "Active PHP Workers:  $active_workers"
+        active_workers=$(pgrep -u "$user" 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+        echo "Active PHP Workers:  ${active_workers:-0}"
 
     else
         echo "Status:              DEFAULT (Shared user www:www)"
@@ -357,18 +366,88 @@ cmd_status() {
 cmd_verify() {
     log_info "Auditing isolation configuration across all websites..."
     local issues=0
-    if [ -d "$VHOSTS_DIR" ]; then
-        for d in "$VHOSTS_DIR"/*; do
-            [ -d "$d" ] || continue
-            local domain
-            domain=$(basename "$d")
-            local detail_file="/www/server/panel/vhost/openlitespeed/detail/${domain}.conf"
-            if [ ! -f "$detail_file" ] || ! grep -q "WP-ISOLATE: ${domain}" "$detail_file" 2>/dev/null; then
-                log_warn "Configuration drift detected: $domain isolation limits are missing in $detail_file!"
-                issues=$((issues + 1))
-            fi
+    local domains=()
+    local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+    local wwwroot_dir="${AAPANEL_WWWROOT_DIR:-/www/wwwroot}"
+    local reg="${SITES_REGISTRY:-/opt/wp-isolate/data/sites.json}"
+
+    # 1. Collect from sites.json registry
+    if [ -f "$reg" ] && command -v python3 >/dev/null 2>&1; then
+        while IFS= read -r d; do
+            [ -n "$d" ] && domains+=("$d")
+        done < <(python3 -c "
+import json
+try:
+    with open('$reg') as f:
+        data = json.load(f)
+        for k in data.keys():
+            print(k)
+except Exception:
+    pass
+" 2>/dev/null || true)
+    fi
+
+    # 2. Collect from aaPanel vhost panel dir
+    if [ -d "$vhost_panel_dir" ]; then
+        for f in "$vhost_panel_dir"/*.conf; do
+            [ -e "$f" ] || continue
+            local d
+            d=$(basename "$f" .conf)
+            [[ "$d" =~ ^(default|0\.default|phpmyadmin|localhost)$ ]] && continue
+            domains+=("$d")
         done
     fi
+
+    if [ ${#domains[@]} -eq 0 ]; then
+        log_info "No websites found to audit."
+        return 0
+    fi
+
+    local unique_domains=()
+    while IFS= read -r d; do
+        [ -n "$d" ] && unique_domains+=("$d")
+    done < <(printf "%s\n" "${domains[@]}" | sort -u)
+
+    for domain in "${unique_domains[@]}"; do
+        local outer_file="${vhost_panel_dir}/${domain}.conf"
+        local detail_file="${vhost_panel_dir}/detail/${domain}.conf"
+        local expected_user
+        expected_user=$(get_site_user "$domain")
+        local docroot
+        docroot=$(detect_vhost_docroot "$domain" "$outer_file" 2>/dev/null || echo "${wwwroot_dir}/${domain}")
+
+        # Check if site is supposed to be isolated
+        local is_supposed_isolated=false
+        if [ -f "$reg" ] && grep -q "\"${domain}\"" "$reg" 2>/dev/null; then
+            is_supposed_isolated=true
+        elif ([ -f "$outer_file" ] && grep -q "setUIDMode 2" "$outer_file" 2>/dev/null) || \
+             ([ -f "$detail_file" ] && grep -qE "extUser\s+iso_" "$detail_file" 2>/dev/null); then
+            is_supposed_isolated=true
+        fi
+
+        if [ "$is_supposed_isolated" = true ]; then
+            local site_drift=false
+            if [ ! -f "$detail_file" ] || ! grep -q "WP-ISOLATE: ${domain}" "$detail_file" 2>/dev/null; then
+                log_warn "Configuration drift detected: $domain isolation limits are missing in $detail_file!"
+                site_drift=true
+            fi
+            if [ ! -f "$outer_file" ] || ! grep -q "setUIDMode 2" "$outer_file" 2>/dev/null; then
+                log_warn "Configuration drift detected: $domain suEXEC (setUIDMode 2) is missing in $outer_file!"
+                site_drift=true
+            fi
+            if [ -d "$docroot" ] && [ "${EUID:-$(id -u)}" -eq 0 ]; then
+                local owner
+                owner=$(stat -c %U "$docroot" 2>/dev/null || stat -f %Su "$docroot" 2>/dev/null || echo "")
+                if [ -n "$owner" ] && [ "$owner" != "$expected_user" ]; then
+                    log_warn "Permission drift detected: $domain docroot owner is $owner, expected $expected_user!"
+                    site_drift=true
+                fi
+            fi
+            if [ "$site_drift" = true ]; then
+                issues=$((issues + 1))
+            fi
+        fi
+    done
 
     if [ "$issues" -eq 0 ]; then
         log_success "Audit completed. All isolated sites have intact configurations."
@@ -379,20 +458,26 @@ cmd_verify() {
 
 cmd_repair() {
     local target_domain="${1:-}"
+    local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
+    local wwwroot_dir="${AAPANEL_WWWROOT_DIR:-/www/wwwroot}"
+
     if [ -n "$target_domain" ]; then
         local user
         user=$(get_site_user "$target_domain")
-        local docroot="/www/wwwroot/${target_domain}"
+        local outer_file="${vhost_panel_dir}/${target_domain}.conf"
+        local docroot
+        docroot=$(detect_vhost_docroot "$target_domain" "$outer_file" 2>/dev/null || echo "${wwwroot_dir}/${target_domain}")
+
+        create_isolated_user "$target_domain" "$docroot"
         isolate_ols_vhost "$target_domain" "$user" 15 "2047M" 10 "$docroot"
         apply_site_permissions "$target_domain" "$docroot"
         purge_legacy_redis_config "$target_domain" "$docroot"
-        verify_and_reload_ols
+        update_site_registry "$target_domain" "$user"
+        verify_and_reload_ols "$user"
         log_success "Repaired $target_domain."
     else
         log_info "Repairing all isolated websites..."
         local domains=()
-        local vhost_panel_dir="${AAPANEL_OLS_VHOST_DIR:-/www/server/panel/vhost/openlitespeed}"
-        local wwwroot_dir="${AAPANEL_WWWROOT_DIR:-/www/wwwroot}"
 
         if [ -d "$vhost_panel_dir" ]; then
             for f in "$vhost_panel_dir"/*.conf; do
@@ -416,10 +501,15 @@ cmd_repair() {
         for domain in "${domains[@]}"; do
             local user
             user=$(get_site_user "$domain")
-            local docroot="${wwwroot_dir}/${domain}"
+            local outer_file="${vhost_panel_dir}/${domain}.conf"
+            local docroot
+            docroot=$(detect_vhost_docroot "$domain" "$outer_file" 2>/dev/null || echo "${wwwroot_dir}/${domain}")
+
+            create_isolated_user "$domain" "$docroot"
             isolate_ols_vhost "$domain" "$user" 15 "2047M" 10 "$docroot"
             apply_site_permissions "$domain" "$docroot"
             purge_legacy_redis_config "$domain" "$docroot"
+            update_site_registry "$domain" "$user"
         done
         verify_and_reload_ols
         log_success "All isolated websites repaired."
@@ -509,17 +599,29 @@ scan_single_domain() {
             log_warn "MALWARE DETECTED: Rogue PHP file in uploads: $f"
             rm -f "$f" 2>/dev/null || true
             found=$((found + 1))
-        done < <(find "${docroot}/wp-content/uploads" -type f -name "*.php" 2>/dev/null || true)
+        done < <(find "${docroot}/wp-content/uploads" -type f \( -name "*.php" -o -name "*.phtml" -o -name "*.php[0-9]" -o -name "*.phps" \) 2>/dev/null || true)
     fi
 
-    # 2. Check .user.ini for auto_prepend_file or auto_append_file
+    # 2. Check .user.ini for suspicious auto_prepend_file or auto_append_file
     if [ -f "${docroot}/.user.ini" ]; then
         if grep -qiE "auto_prepend_file|auto_append_file" "${docroot}/.user.ini" 2>/dev/null; then
-            log_warn "SUSPICIOUS DIRECTIVE: .user.ini contains auto_prepend_file/auto_append_file. Neutralizing..."
-            chattr -i "${docroot}/.user.ini" 2>/dev/null || true
-            sed_i -E '/auto_prepend_file/Id;/auto_append_file/Id' "${docroot}/.user.ini" 2>/dev/null || true
-            chattr +i "${docroot}/.user.ini" 2>/dev/null || true
-            found=$((found + 1))
+            local is_legit_waf=false
+            local prepended_target
+            prepended_target=$(grep -iE "auto_prepend_file|auto_append_file" "${docroot}/.user.ini" | head -n 1 | sed -E "s/.*=[[:space:]]*['\"]?([^'\";]+)['\"]?.*/\1/" | tr -d ' ' || true)
+            if [ -n "$prepended_target" ]; then
+                if [[ "$prepended_target" =~ (wordfence-waf\.php|ninjafirewall) ]] && [ -f "$prepended_target" ]; then
+                    is_legit_waf=true
+                    log_info "Detected legitimate security WAF in .user.ini: $prepended_target"
+                fi
+            fi
+
+            if [ "$is_legit_waf" = false ]; then
+                log_warn "SUSPICIOUS DIRECTIVE: .user.ini contains unrecognized auto_prepend_file/auto_append_file. Neutralizing..."
+                chattr -i "${docroot}/.user.ini" 2>/dev/null || true
+                sed_i -E '/auto_prepend_file/Id;/auto_append_file/Id' "${docroot}/.user.ini" 2>/dev/null || true
+                chattr +i "${docroot}/.user.ini" 2>/dev/null || true
+                found=$((found + 1))
+            fi
         fi
     fi
 
@@ -597,11 +699,16 @@ clean_single_domain() {
     # and fought with the plugin ("wp-config.php operation failed when changing WP_CACHE").
 
     # 2. Remove this site's stale LiteSpeed socket files only
+    local clean_domain
+    clean_domain=$(sanitize_domain_to_user "$target_domain")
+    clean_domain="${clean_domain#iso_}"
     rm -f "/tmp/lshttpd/${target_domain}"* 2>/dev/null || true
+    rm -f "/tmp/lshttpd/"*"${target_domain}"* 2>/dev/null || true
+    rm -f "/tmp/lshttpd/"*"${clean_domain}"* 2>/dev/null || true
 
     # 3. Remove any rogue PHP files from uploads directory
     if [ -d "${docroot}/wp-content/uploads" ]; then
-        find "${docroot}/wp-content/uploads" -type f -name "*.php" -delete 2>/dev/null || true
+        find "${docroot}/wp-content/uploads" -type f \( -name "*.php" -o -name "*.phtml" -o -name "*.php[0-9]" -o -name "*.phps" \) -delete 2>/dev/null || true
     fi
 
     # 4. Re-apply vhost configuration (same limits as isolate: 2047M virtual memory)

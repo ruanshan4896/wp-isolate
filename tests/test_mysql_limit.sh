@@ -32,5 +32,24 @@ EOF
     echo "test_extract_db_user PASS"
 }
 
+test_admin_user_protection() {
+    # Even if mysql command existed, root and administrative users must be skipped
+    local out
+    out=$(set_mysql_user_limit "root" 25 2>&1)
+    echo "$out" | grep -q "Refusing to apply connection limits to administrative MySQL user" || {
+        echo "Expected warning when attempting to limit MySQL root user, got: $out"
+        exit 1
+    }
+
+    out=$(set_mysql_user_limit "debian-sys-maint" 25 2>&1)
+    echo "$out" | grep -q "Refusing to apply connection limits to administrative MySQL user" || {
+        echo "Expected warning when attempting to limit debian-sys-maint, got: $out"
+        exit 1
+    }
+
+    echo "test_admin_user_protection PASS"
+}
+
 test_extract_db_user
+test_admin_user_protection
 echo "ALL TESTS IN test_mysql_limit.sh PASS"

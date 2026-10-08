@@ -123,11 +123,10 @@ isolate_ols_vhost() {
     # 2. Update detail file (where aaPanel defines extprocessor)
     if [ -f "$detail_file" ]; then
         # Ensure /tmp/lshttpd directory has sticky permissions so isolated user can bind domain sockets
-        if [ -d "/tmp/lshttpd" ]; then
-            chmod 1777 /tmp/lshttpd 2>/dev/null || true
-            rm -f "/tmp/lshttpd/${domain}.sock"* 2>/dev/null || true
-            rm -f "/tmp/lshttpd/"*"${domain}"* 2>/dev/null || true
-        fi
+        mkdir -p /tmp/lshttpd 2>/dev/null || true
+        chmod 1777 /tmp/lshttpd 2>/dev/null || true
+        rm -f "/tmp/lshttpd/${domain}.sock"* 2>/dev/null || true
+        rm -f "/tmp/lshttpd/"*"${domain}"* 2>/dev/null || true
 
         if grep -qE "^[[:space:]]*extprocessor[[:space:]]+" "$detail_file"; then
             awk -v user="$user" -v max_conns="$max_conns" -v mem_soft="$mem_soft" -v mem_hard="$mem_hard" -v proc_soft="$proc_soft" -v proc_hard="$proc_hard" '{
@@ -301,9 +300,9 @@ verify_and_reload_ols() {
     log_info "Reloading OpenLiteSpeed gracefully..."
     touch /tmp/lshttpd/.rtreport 2>/dev/null || true
     if [ -x "/usr/local/lsws/bin/lswsctrl" ]; then
-        /usr/local/lsws/bin/lswsctrl restart >/dev/null 2>&1 || /usr/local/lsws/bin/lswsctrl reload >/dev/null 2>&1 || true
+        /usr/local/lsws/bin/lswsctrl reload >/dev/null 2>&1 || /usr/local/lsws/bin/lswsctrl restart >/dev/null 2>&1 || true
     elif command -v systemctl >/dev/null 2>&1; then
-        systemctl restart lsws 2>/dev/null || systemctl reload lsws 2>/dev/null || true
+        systemctl reload lsws 2>/dev/null || systemctl restart lsws 2>/dev/null || true
     fi
     # Terminate old lsphp workers so OpenLiteSpeed respawns them under the isolated UID.
     # When a single site user is given, only that site's workers are killed (other sites keep serving).

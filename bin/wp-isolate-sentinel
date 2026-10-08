@@ -62,7 +62,13 @@ is_aapanel_site_ready() {
         return 1
     fi
 
-    # 4. Check OpenLiteSpeed syntax for ERROR or FATAL (ignoring harmless warnings)
+    # 4. Detail file must exist and contain extprocessor block
+    local detail_file="${OLS_VHOST_DIR}/detail/${domain}.conf"
+    if [ ! -s "$detail_file" ] || ! grep -q "extprocessor" "$detail_file" 2>/dev/null; then
+        return 1
+    fi
+
+    # 5. Check OpenLiteSpeed syntax for ERROR or FATAL (ignoring harmless warnings)
     local test_bin=""
     for b in "/usr/local/lsws/bin/openlitespeed" "/usr/local/lsws/bin/lshttpd"; do
         if [ -x "$b" ]; then
@@ -143,6 +149,20 @@ run_auto_isolation_monitor() {
 
                     local elapsed=$((now - last_mod))
                     local tracking_file="${SETTLE_STATE_DIR}/${domain}.pending"
+                    local failed_file="${SETTLE_STATE_DIR}/${domain}.failed"
+
+                    # Cooldown check if previous isolation attempt failed
+                    if [ -f "$failed_file" ]; then
+                        local failed_time
+                        if stat -c %Y "$failed_file" >/dev/null 2>&1; then
+                            failed_time=$(stat -c %Y "$failed_file")
+                        else
+                            failed_time=$(stat -f %m "$failed_file" 2>/dev/null || echo "$now")
+                        fi
+                        if [ $((now - failed_time)) -lt 60 ]; then
+                            continue
+                        fi
+                    fi
 
                     if [ "$elapsed" -lt "$DEBOUNCE_SECONDS" ]; then
                         if [ ! -f "$tracking_file" ]; then
@@ -153,20 +173,21 @@ run_auto_isolation_monitor() {
                         # File has settled for > DEBOUNCE_SECONDS. Verify handshake before isolating!
                         if is_aapanel_site_ready "$domain"; then
                             log_sentinel "Handshake verified for ${domain}! aaPanel has finished site creation. Executing isolation now..."
-                            rm -f "$tracking_file"
                             
                             # Execute isolation cleanly
                             if "$ISOLATE_CMD" isolate "$domain" >> "${SETTLE_STATE_DIR}/${domain}.log" 2>&1; then
+                                rm -f "$tracking_file" "$failed_file" 2>/dev/null || true
                                 log_sentinel "SUCCESS: Website ${domain} is now fully ISOLATED!"
                             else
-                                log_sentinel "WARNING: Failed to isolate ${domain}. Will retry on next cycle."
+                                touch "$failed_file"
+                                log_sentinel "WARNING: Failed to isolate ${domain}. Cooldown 60s before retry."
                             fi
                         else
                             log_sentinel "Waiting: ${domain} files still settling or aaPanel operation in progress..."
                         fi
                     fi
                 else
-                    rm -f "${SETTLE_STATE_DIR}/${domain}.pending" 2>/dev/null || true
+                    rm -f "${SETTLE_STATE_DIR}/${domain}.pending" "${SETTLE_STATE_DIR}/${domain}.failed" 2>/dev/null || true
                 fi
             done
         fi
@@ -189,6 +210,7 @@ run_503_healer_worker() {
         if echo "$line" | grep -q "oops! 503 Service Unavailable"; then
             local domain
             domain=$(echo "$line" | sed -n 's/.*#\([^]]*\)\].*/\1/p')
+            domain="${domain%:*}"
             if [ -n "$domain" ]; then
                 local lock_file="/tmp/wp_isolate_healer_${domain}.lock"
                 if [ ! -f "$lock_file" ]; then
@@ -211,20 +233,20 @@ run_503_healer_worker() {
 run_uploads_sanitizer() {
     log_sentinel "Started Rogue PHP Uploads Sanitizer (Runs every 10 minutes)..."
     while true; do
-        sleep 600
         if [ -d "/www/wwwroot" ]; then
             for upl in /www/wwwroot/*/wp-content/uploads; do
                 [ -d "$upl" ] || continue
-                # Find any .php file inside uploads and quarantine it
+                # Find any executable script inside uploads and quarantine it
                 while IFS= read -r php_file; do
                     [ -n "$php_file" ] || continue
                     local qdir="/tmp/wp_isolate_quarantine"
                     mkdir -p "$qdir"
                     log_sentinel "MALWARE ALERT: Detected rogue PHP file in uploads: $php_file. Quarantining!"
-                    mv "$php_file" "${qdir}/$(basename "$php_file").$(date +%s).quarantine" 2>/dev/null || rm -f "$php_file" 2>/dev/null || true
-                done < <(find "$upl" -type f -name "*.php" 2>/dev/null || true)
+                    mv "$php_file" "${qdir}/$(basename "$php_file").$(date +%s)_$RANDOM.quarantine" 2>/dev/null || rm -f "$php_file" 2>/dev/null || true
+                done < <(find "$upl" -type f \( -name "*.php" -o -name "*.phtml" -o -name "*.php[0-9]" -o -name "*.phps" \) 2>/dev/null || true)
             done
         fi
+        sleep 600
     done
 }
 
